@@ -1,0 +1,2810 @@
+---
+title: "Gender and Other Potential Biases in Peer Review: Analysis of 38,250 External Peer Review Reports"
+author: "Martins, Heyard et al"
+description: |
+  Data Analysis Notebook
+date: "`r Sys.Date()`"
+output:
+  radix::radix_article:
+    self_contained: false
+repository_url: https://github.com/zambujo/snsf-peerreview
+bibliography: ../data/references.bib
+---
+```{r set-options, echo=FALSE}
+options(width = 800)
+```
+
+```{r setup, include=FALSE}
+source("../R/packages.r")
+source("../R/graphics.r")
+# load the data (requires ../R/datahub.r)
+reviews <- readr::read_csv(bzfile("../data/reviews_AGEupdate.csv.bz2"))
+reviews <- reviews %>% 
+  dplyr::rename(nomination_source = referral_type) %>% 
+  select(-reviewer_source)
+
+unique_reviews <- reviews %>%
+  nrow() %>%
+  prettyNum(big.mark = "'")
+unique_applications <- reviews %$% 
+  length(unique(project_id)) %>% 
+  prettyNum(big.mark = "'")
+unique_applicants <- reviews %$% 
+  length(unique(applicant_id)) %>% 
+  prettyNum(big.mark = "'")
+unique_reviewers <- reviews %$% 
+  length(unique(reviewer_id)) %>% 
+  prettyNum(big.mark = "'")
+
+average_nb_reviews_grant <- reviews %>% 
+  group_by(project_id) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>%  
+  summarise(mean(n)) %>% 
+  round(., 2)
+
+average_nb_applications_applicant <- reviews %>% 
+  group_by(applicant_id) %>% 
+  summarise(n = n_distinct(project_id)) %>% 
+  ungroup() %>%  
+  summarise(mean(n)) %>% 
+  round(., 2)
+  
+average_nb_applications_reviewer <- reviews %>% 
+  group_by(reviewer_id) %>% 
+  summarise(n = n_distinct(project_id)) %>% 
+  ungroup() %>%  
+  summarise(mean(n)) %>% 
+  round(., 2)
+  
+reviews_full <- reviews %>% 
+  filter(!is.na(applicant_age), 
+         !is.na(applicant_gender),
+         !is.na(research_topic),
+         !is.na(reviewer_gender),
+         !is.na(applicant_nationality))
+```
+
+```{r use_hypothesis, results='asis', echo=FALSE, eval=TRUE}
+cat('<script src="https://hypotheses.is/embed.js" async></script>')
+```
+
+## Synopsis
+
+This notebook provides additional material to a [preprint](https://peerj.com/preprints/27587/) of a manuscript and a [conference abstract](https://peerreviewcongress.org/prc17-0280) presented at the [5th International Congress on Peer Review and Scientific Publication](https://peerreviewcongress.org).
+
+## Data
+
+We analyzed review scores provided by external reviewers evaluating the overall quality of grant applications submitted to SNSF project funding between 2009 and 2016.  Our goal is to investigate possible scoring biases by exploring how scores distribute under different conditions. We explored differences in score distributions according to the origin of the review (Switzerland/international), the gender of the applicant and of the reviewer (male/female), and the source of nomination of the reviewer (applicant/SNSF). 
+
+```{r overview, echo=FALSE, include=FALSE}
+reviews_full <- reviews_full %>% 
+  mutate(applicant_continent_notCH = 
+           ifelse(applicant_iso == "ch", "Switzerland",
+                  countrycode::countrycode(applicant_iso,
+                                           origin = "iso2c",
+                                           destination = "continent")),
+         reviewer_continent_notCH = 
+           ifelse(reviewer_iso == "ch", "Switzerland",
+                  countrycode::countrycode(reviewer_iso,
+                                           origin = "iso2c",
+                                           destination = "continent"))) %>% 
+  select(-applicant_iso, -reviewer_iso) %>% 
+  mutate(applicant_continent_notCH =
+           ifelse(applicant_continent_notCH == "Europe",
+                  "Europe (not CH)", applicant_continent_notCH),
+         reviewer_continent_notCH =
+           ifelse(reviewer_continent_notCH == "Europe",
+                  "Europe (not CH)", reviewer_continent_notCH))
+  
+# 
+# view_reviews <-  
+#   tibble(
+#   `Label` = names(reviews),
+#   `Description` = c(
+#     "overall assessment score",
+#     "call date deadline",
+#     "grant application unique identifier",
+#     "applicant's affiliation",
+#     "applicant's gender",
+#     "applicant's unique identifier",
+#     "applicant's nationality",
+#     "main topic of research",
+#     "reviewer's gender",
+#     "reviewer's unique identifier",
+#     "review origin",
+#     "reviewer's source of nomination",
+#     "applicant's age (/10)",
+#     "call_end_date binary cut",
+#     "applicant's origin continent",
+#     "reviewer's origin continent"),
+#   `Distinct Values` = prettyNum(
+#     dplyr::summarise_all(reviews, n_distinct), big.mark = "'"))
+# rmarkdown::paged_table(view_reviews, options = list(rows.print = 15))
+
+# trying to automatise the old TABLE 3 in the APPENDIX output: 
+reviews_sum <- reviews %>%
+  summarise(factor = NA, n = n(), proportion = NA, mean = 
+              round(mean(overall_score), 2), sd = round(sd(overall_score), 2))
+getSum <- function(group_variable){
+  DF <- reviews %>% 
+    group_by(get(group_variable)) %>% 
+    summarise(n = n(), proportion = round(n()/38250*100, 2), 
+              mean = round(mean(overall_score), 2),
+              sd = round(sd(overall_score),2)) 
+  names(DF)[1] <- 'factor'
+  if (is.date(DF$factor))  DF$factor <- as.character(DF$factor)
+  return(DF)
+}
+
+getSum_age <- function(){
+ DF <- reviews %>% 
+   mutate(age_range = round_any(applicant_age*10, 5, floor)) %>% 
+   group_by(age_range) %>% 
+   summarise(n = n(), proportion = round(n()/38250*100, 2), 
+             mean = round(mean(overall_score), 2), sd = round(sd(overall_score),2)) 
+ names(DF)[1] <- 'factor'
+ return(DF)
+} 
+
+TABLE3 <- cbind(c('Total overview', 'Research Topic', rep(' ', 11),
+                  'Deadline of the Call', rep(' ', 14), 
+                  'Nomination source', '', 
+                  'Review origin', rep(' ',2),
+                  'Reviewer gender', rep(' ', 2), 
+                  'Applicant gender', rep(' ', 2),
+                  'Applicant nationality', ' ',
+                  'Affiliation type', rep(' ', 2),
+                  'Age group', rep(' ', 11)), 
+                rbind(reviews_sum, getSum('research_topic'),
+                getSum('call_end_date'), getSum('nomination_source'), 
+                getSum('review_origin'), getSum('reviewer_gender'),
+                getSum('applicant_gender'), getSum('applicant_nationality'),
+                getSum('applicant_affiliation'), getSum_age()))
+colnames(TABLE3) <- c('Variable', 'Level', 'N', 'Proportion',
+                      'Avgerage approved', 'SD')
+rmarkdown::paged_table(TABLE3)
+```
+
+The dataset contains `r unique_reviews` reviews of `r unique_applications` unique grant applications submitted by `r unique_applicants` unique applicants and evaluated by `r unique_reviewers` unique external reviewers between `r min(lubridate::year(reviews$call_end_date))` and `r max(lubridate::year(reviews$call_end_date))`. The average number of reviews per grant application was `r average_nb_reviews_grant`, applicants submitted an average of `r average_nb_applications_applicant` grant applications and reviewers reviewed an average of `r average_nb_applications_reviewer` applications. The review scores (`overall_score`) consist of the following six-level rating scale: *poor* (1), *fair* (2) *average* (3), *good* (4), *excellent* (5), and *outstanding* (6). The following table gives characteristics of the applicants on the date of their first submission of a project grant proposal (Table 1 of the manuscript). Figure \@ref(fig:ratio-plot) shows how the amount of female applicants increased over time compared to male applicants. It also shows the average ratio of female external reviewers per project. This last ratio depends however strongly on the research topic (see Figure \@ref(fig:ratio-per-topic)).
+
+
+```{r table1, echo = FALSE}
+get_summary_by_gender <- function(data, group_variable){
+  N <- table(data$applicant_gender)
+  DF <- data %>% 
+    group_by(get(group_variable), applicant_gender) %>% 
+    summarise(text = paste0(n(), " (",
+                            round(n()/N[head(applicant_gender, 1)]*100, 2),
+                            "%)")) %>% 
+    spread(applicant_gender, text)
+  first_row <- c(group_variable, "", "")
+  names(first_row) <- colnames(DF)
+  DF[ , 1] <- sapply(DF[ , 1], function(a) as.character(a))
+  DF <- rbind(first_row, DF)
+  colnames(DF) <- c(" ", "Female applicants", "Male applicants")
+  return(DF %>%  as_tibble())
+}
+
+applicant_full <- reviews_full %>%  
+  distinct(call_end_date, applicant_id, .keep_all = TRUE) %>% 
+  group_by(applicant_id) %>% 
+  top_n(1, wt = call_end_date)
+
+tab_gender <- applicant_full %>% 
+  group_by(applicant_gender) %>% 
+  summarise(text = paste0("(n = ", n(), ", ",
+                          round(n()/local(nrow(applicant_full))*100, 2),
+                          ")")) %>% 
+  spread(applicant_gender, text) %>% 
+  rename("Female applicants" = f,
+         "Male applicants" = m) %>% 
+  mutate(" " = " ") %>% 
+  select(c(3, 1, 2))
+
+tab_age <- applicant_full %>% 
+  group_by(applicant_gender) %>% 
+  summarise(text = paste0(round(mean(applicant_age * 10), 2), " (",
+                          round(sd(applicant_age * 10), 2), ")")) %>% 
+  spread(applicant_gender, text) %>% 
+  rename("Female applicants" = f,
+         "Male applicants" = m) %>% 
+  mutate(" " = "Age (mean, SD)") %>% 
+  select(c(3, 1, 2))
+
+tab_affiliation <- applicant_full %>% 
+  get_summary_by_gender("applicant_affiliation")
+tab_nationality <- applicant_full %>%
+  get_summary_by_gender("applicant_nationality")
+tab_topic <- applicant_full %>% 
+  get_summary_by_gender("research_topic")
+tab_call <- applicant_full %>% 
+  get_summary_by_gender("call_end_date")
+tab_applicant_continent <- applicant_full %>%
+  get_summary_by_gender("applicant_continent_notCH")
+  
+table1 <- rbind(tab_gender, tab_age, tab_affiliation, tab_nationality,
+                tab_topic, tab_call, tab_applicant_continent)
+
+kable(table1)
+```
+
+
+```{r ratio-plot, echo = FALSE, fig.cap="Ratio of females among all the applicants over time and ratio of female external reviewers per grant application."}
+# the female applicants/reviewers ratio over time: 
+female_trend_plot_data <- reviews_full %>%
+  group_by(call_end_date, applicant_gender) %>%
+  summarise(number = n()) %>%
+  spread(applicant_gender, number) %>% 
+  group_by(call_end_date) %>%
+  summarise(ratio = f/sum(f, m)) %>% 
+  mutate(who = "applicants")
+
+female_rev_ratio <- reviews_full %>% 
+  group_by(call_end_date, project_id, reviewer_gender) %>% 
+  summarise(number = n()) %>% 
+  spread(reviewer_gender, number) %>% 
+  mutate(f = ifelse(is.na(f), 0, f),
+         m = ifelse(is.na(m), 0, m)) %>% 
+  group_by(call_end_date, project_id) %>% 
+  summarise(female_rev_perc = f/sum(f, m)) %>% 
+  group_by(call_end_date) %>% 
+  summarise(ratio = mean(female_rev_perc)) %>% 
+  mutate(who = "reviewers per project")
+
+merged <- rbind(female_trend_plot_data, female_rev_ratio)
+female_trend_plot <- merged %>% 
+  ggplot(aes(x = call_end_date, y = ratio, color = who)) +
+  geom_point() +
+  geom_line() +
+  geom_text(aes(label = round(ratio, 2)), nudge_y = .01,
+            check_overlap = TRUE, show.legend = FALSE) +
+  ylim(.1, .3) +
+  ggsci::scale_color_uchicago(name = " ") +
+  labs(x = "Call", y = "Ratio (female vs. male)") +
+  singlepanel_theme()
+
+female_trend_plot
+ggplot2::ggsave("../plots_paper/female_ratio_trend.pdf",
+                 female_trend_plot, w = 6, h = 3)
+```
+
+
+```{r ratio-per-topic, echo = FALSE, fig.cap="Ratio of females reviewers per grant application over time depending on the research topic."}
+female_rev_trend_per_topic_plot <-  reviews_full %>% 
+  group_by(call_end_date, project_id,
+           research_topic, reviewer_gender) %>% 
+  summarise(number = n()) %>% 
+  spread(reviewer_gender, number) %>% 
+  mutate(f = ifelse(is.na(f), 0, f),
+         m = ifelse(is.na(m), 0, m)) %>% 
+  group_by(call_end_date, project_id, research_topic) %>% 
+  summarise(female_rev_perc = f/sum(f, m)) %>% 
+  group_by(call_end_date, research_topic) %>% 
+  summarise(avg_female_rev_perc = mean(female_rev_perc)) %>% 
+  ggplot(aes(x = call_end_date, y = avg_female_rev_perc, color = research_topic)) +
+  geom_point() +
+  geom_line() +
+  scale_color_manual(values = hcl.colors(12, palette = "Reds 2"),
+                     "research topic") +
+  #geom_text(aes(label = round(avg_female_rev_perc, 2)), nudge_y = .05) +
+  ylim(0, .5) +
+  labs(x = "Call", y = "Ratio of female reviewers per application") +
+  singlepanel_theme()
+female_rev_trend_per_topic_plot
+
+ggplot2::ggsave("../plots_paper/female_reviewer_ratio_trend_per_research_topic.pdf",
+                 female_rev_trend_per_topic_plot, w = 7, h = 6)
+```
+
+
+```{r more descr, echo = FALSE}
+nb_male_female_only <- reviews_full %>% 
+  group_by(project_id, reviewer_gender) %>% 
+  summarise(number = n()) %>% 
+  spread(reviewer_gender, number) %>% 
+  mutate(f = ifelse(is.na(f), 0, f),
+         m = ifelse(is.na(m), 0, m),
+         is_male_only = ifelse(f == 0, 1, 0),
+         is_female_only = ifelse(m == 0, 1, 0)) %>% 
+  ungroup() %>% 
+  summarise(nb_female_only = sum(is_female_only),
+            nb_male_only = sum(is_male_only))
+
+f_and_m_ids <- reviews_full %>% 
+  group_by(project_id, reviewer_gender) %>% 
+  summarise(number = n()) %>% 
+  spread(reviewer_gender, number) %>% 
+  mutate(f = ifelse(is.na(f), 0, f),
+         m = ifelse(is.na(m), 0, m)) %>% 
+  filter(f != 0 & m != 0) %>% 
+  select(project_id)
+
+
+f_grades_m_grades <- reviews_full %>% 
+  filter(project_id %in% local(f_and_m_ids$project_id)) %>% 
+  group_by(project_id, reviewer_gender) %>% 
+  summarise(average_grade_rev_gender = mean(overall_score),
+            number = n())
+
+f_grades_m_grades_diff <- f_grades_m_grades %>% 
+  group_by(project_id) %>% 
+  summarise(difference = diff(average_grade_rev_gender)) %>% 
+  summarise(mean(difference))
+```
+
+`r round(nb_male_female_only$nb_male_only/nrow(reviews_full) * 100, 1)`% of the grant applications had only male external reviewers, while `r round(nb_male_female_only$nb_female_only/nrow(reviews_full) * 100, 2)`% had only female external reviewers. For the applications rated by at least one male and one female reviewer, the male reviewer(s) gave a score which was on average `r round(f_grades_m_grades_diff, 2)` points higher than the score attributed by the female reviewer(s).
+<!-- <aside> -->
+<!-- The ages of the applicants are grouped in 5-year intervals to protect individual identities. %_[RH]: this has been changed, age is treated as a continuous variable. However, it has been devided by 10, so that after modelling we can make statements on 10 years-steps._  -->
+<!-- </aside> -->
+
+
+## Exploratory Data Analysis
+
+### Score Frequency Distributions
+
+Visual inspection of the frequency distributions of review scores indicate overall negative skweness.
+
+Figures \@ref(fig:nomination) and \@ref(fig:origin) show that the skweness is strongest for review scores attributed by applicant-nominated reviewers (Figure \@ref(fig:nomination)).  Figure \@ref(fig:origin) also reveals that the relative frequency of outstanding review scores from international-based reviewers is roughly double of that from Swiss-based reviewers.
+
+
+```{r nomination, echo=FALSE, fig.cap="Frequency distributions of external review scores by source of nomination of the reviewer. Applicant-nominated reviewers on the left, SNSF-nominated reviewers on the right."}
+# labels with counts
+nomination_counts <- reviews %>%
+  dplyr::count(nomination_source) %>%
+  dplyr::mutate(
+    nomination_source = stringr::str_replace(
+      nomination_source, "^other$", "SNSF-Nominated Reviewers"),
+    nomination_source = stringr::str_replace(
+      nomination_source, "^applicant$", "Applicant-Nominated Reviewers"),
+    n = stringr::str_c("(N=", prettyNum(n, big.mark = "'"), ")")) %>%
+  tidyr::unite(col = "group", sep = " ") %>% 
+  pull(group)
+
+data_referral <- reviews %>%
+  dplyr::mutate(
+    nomination_source = str_replace(nomination_source, "applicant", nomination_counts[1]),
+    nomination_source = str_replace(nomination_source, "other", nomination_counts[2])) %>%
+  group_by(nomination_source, overall_score) %>%
+  summarise(n = n()) %>%
+  mutate(prop = 100 * n / sum(n))
+
+plot_referral <- data_referral %>%
+  ggplot2::ggplot(aes(x = overall_score, y = prop)) +
+  ggplot2::geom_bar(stat = "identity") + 
+  ggplot2::labs(x = "\nReview Score", y = "Relative Frequency (%)\n") + 
+  ggplot2::facet_wrap(~ nomination_source) +
+  multipanel_theme()
+
+ggplot2::ggsave("../../fig/referral.pdf", plot_referral, w = 5, h = 2.5)
+plot_referral
+```
+
+```{r, origin, echo=FALSE, fig.cap="Frequency distributions of external review scores by country of affiliation of the reviewer. International-based reviewers on the left, Swiss-based reviewers on the right."}
+origin_counts <- reviews %>% 
+  dplyr::count(review_origin) %>%
+  dplyr::filter(!is.na(review_origin)) %>%
+  dplyr::mutate(
+    review_origin = stringr::str_replace(
+      review_origin, "^international$", "International-Based Reviewers"),
+    review_origin = stringr::str_replace(
+      review_origin, "^national$", "National-Based Reviewers"),
+    n = stringr::str_c("(N=", prettyNum(n, big.mark = "'"), ")")) %>%
+  tidyr::unite(col = "group", sep = " ") %>% 
+  pull(group)
+
+data_origin <- reviews %>%
+  dplyr::filter(!is.na(review_origin)) %>%
+  dplyr::mutate(
+    review_origin = str_replace(review_origin, "^international$", origin_counts[1]),
+    review_origin = str_replace(review_origin, "^national$", origin_counts[2])) %>%
+  group_by(review_origin, overall_score) %>%
+  summarise(n = n()) %>%
+  mutate(prop = 100 * n / sum(n))
+
+plot_origin <- data_origin %>%
+  ggplot2::ggplot(aes(x = overall_score, y = prop)) +
+  ggplot2::geom_bar(stat = "identity") + 
+  ggplot2::labs(x = "\nReview Score", y = "Relative Frequency (%)\n") + 
+  ggplot2::facet_wrap(~ review_origin) +
+  multipanel_theme()
+
+ggplot2::ggsave("../../fig/origin.pdf", plot_origin, w = 5, h = 2.5)
+plot_origin
+```
+
+```{r, echo = FALSE, include = FALSE}
+plot_referral$labels <- plot_origin$labels <- list(
+    x = "Evaluation Score\n",
+    y = "Relative Frequency (%)\n")
+
+grid_nomination_origin <- grid.arrange(plot_referral, plot_origin, nrow = 2)
+#ggplot2::ggsave("../plots_paper/nomination_origin.pdf", grid_nomination_origin)
+
+
+```
+
+The gender of the applicants also appears to have an influence on review scores' distribution.  Figure \@ref(fig:gender-applicants) shows a more negative skweness of the review scores' distribution for male applicant than for female applicants.
+
+```{r gender-applicants, echo=FALSE, fig.cap="Frequency distributions of external review scores by gender of the principal applicants."}
+
+gender_applicant_counts <- reviews %>% 
+  dplyr::count(applicant_gender) %>%
+  dplyr::filter(!is.na(applicant_gender)) %>%
+  dplyr::mutate(
+    applicant_gender = stringr::str_replace(
+      applicant_gender, "^f$", "Female Applicants"),
+    applicant_gender = stringr::str_replace(
+      applicant_gender, "^m$", "Male Applicants"),
+    n = stringr::str_c("(N=", prettyNum(n, big.mark = "'"), ")")) %>%
+  tidyr::unite(col = "group", sep = " ") %$% 
+  I(group)
+
+data_gender_applicant <- reviews %>%
+  dplyr::filter(!is.na(applicant_gender)) %>%
+  dplyr::mutate(
+    applicant_gender = stringr::str_replace(
+      applicant_gender, "^f$", gender_applicant_counts[1]),
+    applicant_gender = stringr::str_replace(
+      applicant_gender, "^m$", gender_applicant_counts[2])) %>%
+  group_by(applicant_gender, overall_score) %>%
+  summarise(n = n()) %>%
+  mutate(prop = 100 * n / sum(n))
+
+plot_gender_applicant <- data_gender_applicant %>%
+  ggplot(aes(x = overall_score, y = prop)) +
+  geom_bar(stat = "identity") + 
+  labs(x = "\nReview Score", y = "Relative Frequency (%)\n") + 
+  facet_wrap(~ applicant_gender) +
+  multipanel_theme()
+
+ggplot2::ggsave("../../fig/gender_applicant.pdf", plot_gender_applicant, w = 5, h = 2.5)
+plot_gender_applicant
+```
+
+Interestingly, gender of reviewers follow a similar pattern. Figure \@ref(fig:gender-reviewers) shows that the skweness also seems to be more negative for review scores given by male reviewers than by female reviewers. This indicates that both the gender of applicants and reviewers likely have an influence on review scores' distribution.
+The Table \@ref(tab:overall-score) shows the same information in form of a table.
+
+```{r gender-reviewers, echo=FALSE, fig.cap = "Frequency distributions of external review scores by gender of the reviewers."}
+gender_reviewer_counts <- reviews %>% 
+  dplyr::count(reviewer_gender) %>%
+  dplyr::filter(!is.na(reviewer_gender)) %>%
+  dplyr::mutate(
+    reviewer_gender = stringr::str_replace(
+      reviewer_gender, "^f$", "Female Reviewers"),
+    reviewer_gender = stringr::str_replace(
+      reviewer_gender, "^m$", "Male Reviewers"),
+    n = stringr::str_c("(N=", prettyNum(n, big.mark = "'"), ")")) %>%
+  tidyr::unite(col = "group", sep = " ") %$% 
+  I(group)
+
+data_gender_reviewer <- reviews %>%
+  dplyr::filter(!is.na(reviewer_gender)) %>%
+  dplyr::mutate(
+    reviewer_gender = stringr::str_replace(
+      reviewer_gender, "^f$", gender_reviewer_counts[1]),
+    reviewer_gender = stringr::str_replace(
+      reviewer_gender, "^m$", gender_reviewer_counts[2])) %>%
+  group_by(reviewer_gender, overall_score) %>%
+  summarise(n = n()) %>%
+  mutate(prop = 100 * n / sum(n))
+
+plot_gender_reviewer <- data_gender_reviewer %>%
+  ggplot(aes(x = overall_score, y = prop)) +
+  geom_bar(stat = "identity") + 
+  labs(
+    x = "\nReview Score",
+    y = "Relative Frequency (%)\n") + 
+  facet_wrap(~ reviewer_gender) +
+  multipanel_theme()
+
+ggplot2::ggsave("../../fig/gender_reviewer.pdf", plot_gender_reviewer, w = 5, h = 2.5)
+plot_gender_reviewer
+```
+
+
+```{r, echo = FALSE, include = FALSE}
+plot_gender_applicant$labels <- plot_gender_reviewer$labels <- list(
+    x = "Evaluation Score\n",
+    y = "Relative Frequency (%)\n")
+
+grid_gender <- grid.arrange(plot_gender_applicant, plot_gender_reviewer, nrow = 2)
+# ggplot2::ggsave("../plots_paper/gender.pdf", grid_gender)
+```
+
+
+```{r overall_score, echo = FALSE}
+tab_nomination <- reviews %>%
+  dplyr::mutate(
+    nomination_source = str_replace(nomination_source, "applicant",
+                                    nomination_counts[1]),
+    nomination_source = str_replace(nomination_source, "other",
+                                    nomination_counts[2])) %>%
+  group_by(nomination_source) %>% 
+  summarise("Average overall score (SD)" = paste0(round(mean(overall_score),
+                                                         2), " (",
+                                                   round(sd(overall_score), 2),
+                                                   ")"),
+            "Median overall score (IQR)" = paste0(round(median(overall_score),
+                                                        2), " (",
+                                                  round(IQR(overall_score), 2),
+                                                  ")")) %>% 
+  rename(" " = nomination_source)
+
+tab_origin <- reviews %>%
+  dplyr::filter(!is.na(review_origin)) %>%
+  dplyr::mutate(
+    review_origin = str_replace(review_origin, "^international$",
+                                origin_counts[1]),
+    review_origin = str_replace(review_origin, "^national$",
+                                origin_counts[2])) %>%
+  group_by(review_origin) %>% 
+  summarise("Average overall score (SD)" = paste0(round(mean(overall_score),
+                                                         2), " (",
+                                                   round(sd(overall_score), 2),
+                                                   ")"),
+            "Median overall score (IQR)" = paste0(round(median(overall_score),
+                                                         2), " (",
+                                                   round(IQR(overall_score), 2),
+                                                   ")")) %>% 
+  rename(" " = review_origin)
+
+tab_applicant_gender <- reviews %>%
+  dplyr::filter(!is.na(applicant_gender)) %>%
+  dplyr::mutate(
+    applicant_gender = stringr::str_replace(
+      applicant_gender, "^f$", gender_applicant_counts[1]),
+    applicant_gender = stringr::str_replace(
+      applicant_gender, "^m$", gender_applicant_counts[2])) %>%
+  group_by(applicant_gender) %>% 
+  summarise("Average overall score (SD)" = paste0(round(mean(overall_score),
+                                                         2), " (",
+                                                   round(sd(overall_score), 2),
+                                                   ")"),
+            "Median overall score (IQR)" = paste0(round(median(overall_score),
+                                                        2), " (",
+                                                  round(IQR(overall_score), 2),
+                                                  ")")) %>% 
+  rename(" " = applicant_gender)
+
+
+tab_reviewer_gender <- reviews %>%
+  dplyr::filter(!is.na(reviewer_gender)) %>%
+  dplyr::mutate(
+    reviewer_gender = stringr::str_replace(
+      reviewer_gender, "^f$", gender_reviewer_counts[1]),
+    reviewer_gender = stringr::str_replace(
+      reviewer_gender, "^m$", gender_reviewer_counts[2]))  %>%
+  group_by(reviewer_gender) %>% 
+  summarise("Average overall score (SD)" = paste0(round(mean(overall_score),
+                                                         2), " (",
+                                                   round(sd(overall_score), 2),
+                                                   ")"),
+            "Median overall score (IQR)" = paste0(round(median(overall_score),
+                                                        2), " (",
+                                                  round(IQR(overall_score), 2),
+                                                  ")")) %>% 
+  rename(" " = reviewer_gender)
+
+
+tab <- rbind(tab_nomination, tab_origin,
+             tab_applicant_gender, tab_reviewer_gender)
+```
+
+
+```{r overall-score, echo = FALSE}
+kable(tab,
+      caption = "Average and median overall score depending on certain characteristics of 
+      the applicants and review process, together with their standard deviation and interquartile range.")
+```
+
+
+To follow on gender, we show, in Figure \@ref(fig:means-topic), summary statistics of the review scores by gender of the applicant and by research topic. For example. in *Mathematics* and *Physics*, male applicants receive outstandingly high review scores on average.
+
+```{r means-topic, echo=FALSE, fig.cap = "Upper panel: Mean review scores by research topic of the grant applications for both female and male applicants. Horizontal lines indicate Wald confidence intervals of the mean. Lower panel: Proportions of female and male applicants by research topic.", fig.height=7}
+n_fun <- function(x, x_space = .095) { # RH: increased space from .04 to .075
+  dplyr::tibble(
+    y = x_space + mean(x) + sd(x) / sqrt(length(x)),
+    label = prettyNum(length(x), big.mark = "'"))
+}
+
+by_topics <- reviews %>% 
+  dplyr::filter(!is.na(applicant_gender)) %>%
+  dplyr::mutate(
+    applicant_gender = recode(
+      applicant_gender, `m` = "Male Applicants", `f` = "Female Applicants"),
+    research_topic = fct_reorder(research_topic, overall_score, mean))
+
+plot_topics <- by_topics %>%
+  ggplot(aes(x = research_topic, 
+             y = overall_score)) +
+  ggsci::scale_color_uchicago() +
+  ggsci::scale_fill_uchicago() +
+  stat_summary(fun.data = function(x) mean_se(x, mult = 1.96), # mean_cl_normal, #mean_se,  # RH: changed mean_se to mean_cl_normal
+               geom = "pointrange", 
+               aes(color = applicant_gender, fill = applicant_gender), 
+               size = .4,
+               shape = 22, 
+               position = position_dodge(width = -.75)) +
+  # stat_summary(fun.data = n_fun,
+  #              geom = "text",
+  #              size = 2.5,
+  #              aes(color = applicant_gender),
+  #              position = position_dodge(width = -.75)) +
+  labs(x = "Research Topic\n", 
+       y = "\nAverage Evaluation Score") +
+  coord_flip() +
+  singlepanel_theme() +
+  guides(colour = guide_legend(override.aes = list(linetype=c(0,0)))) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    legend.direction = "vertical")
+
+gender_shares <- by_topics %>% 
+  dplyr::group_by(research_topic, applicant_gender) %>%
+  dplyr::summarise(n = n_distinct(applicant_id)) %>%
+  dplyr::mutate(percentage = 100 * n / sum(n)) %>%
+  dplyr::ungroup() %>%
+  ggplot(mapping = aes(
+    x = research_topic,
+    y = percentage,
+    fill = reorder(applicant_gender, desc(applicant_gender)),
+    label = round(percentage, 1))) +
+  geom_bar(stat = "identity", color = "white") +
+  geom_text(
+    position = position_stack(vjust = .5), 
+    mapping = aes(color = reorder(applicant_gender, desc(applicant_gender))),
+    size = 2.5) +
+  guides(fill = FALSE, color = FALSE) + 
+  labs(
+    x = "Research Topic\n",
+    y = "\nPercentage of Female (Left) and Male Applicants (Right)") +
+  scale_fill_manual(values = rev(ggsci::pal_uchicago()(2))) +
+  scale_color_manual(values = c("white", "white")) +
+  scale_y_continuous(expand = c(0, .5)) +
+  coord_flip() +
+  singlepanel_theme()
+
+topics_combined <- ggpubr::ggarrange(
+  plot_topics, gender_shares, 
+  ncol = 1, nrow = 2, heights = c(2.3, 1))
+
+
+ggplot2::ggsave("../../fig/topics.pdf", topics_combined, w = 5, h = 6)
+topics_combined
+```
+
+Figure \@ref(fig:means-age) shows summary statistics of the review scores by gender and by age group of the applicants. This representation reveals a clearer distinction in the average review scores between the two genders. Figure \@ref(fig:means-age) also presents the "leaky pipeline" by plotting the share of female grant applicants for each age class in the bottom-right panel of the figure. Figure \@ref(fig:means-age-update) simply zooms into the previous one, by deleting the group with very low counts.
+
+```{r means-age, echo=FALSE, fig.cap = "Upper panels: mean review scores by age group for both female (top) and male (bottom) applicants. Horizontal lines indicate the Wald confidence interval of the mean. Lower panel: Proportions of female and male applicants per age group.", fig.height=6}
+n_fun2 <- function(x, x_space = .35) { # RH: increased space from .04 to .075
+  dplyr::tibble(
+    y = ifelse(mean(x) > 4.7, ifelse(mean(x) < 5.2, .2, x_space),
+               .15) + mean(x) + sd(x) / sqrt(length(x)),
+    label = prettyNum(length(x), big.mark = "'"))
+} # RH:  increased space from .02 to .04
+# upper panel ---------
+plot_age <- reviews %>%
+  dplyr::filter(
+    !is.na(applicant_gender), # RH: length(which(is.na(reviews$applicant_gender))) # ---> 31
+    !is.na(applicant_age)#, # RH: length(which(is.na(reviews$applicant_age))) # ---> 33
+    #applicant_age > 2.5, applicant_age < 7
+    ) %>%
+  dplyr::mutate(
+    applicant_gender = recode(
+      applicant_gender, 
+      `m` = "Male Applicants", 
+      `f` = "Female Applicants"),
+    applicant_age = 10 * applicant_age,
+    applicant_age_range = plyr::round_any(applicant_age, 5, floor)) %>% # RH: added applicant_age_range
+  ggplot(aes(x = applicant_age_range, y = overall_score)) + # RH: changed applicant_age to applicant_age_range
+  ggsci::scale_color_uchicago() +
+  ggsci::scale_fill_uchicago() +
+  stat_summary(fun.data = function(x) mean_se(x, mult = 1.96), # RH: changed mean_se to Wald CI
+               geom = "pointrange",
+               aes(color = applicant_gender, fill = applicant_gender), 
+               size = .4,
+               shape = 22, 
+               position = position_dodge(width = -3)) +
+  # stat_summary(fun.data = n_fun2, 
+  #              geom = "text", 
+  #              size = 2.5, 
+  #              aes(color = applicant_gender), 
+  #              position = position_dodge(width = -3)) +
+  labs(x = "Age Group\n", 
+       y = "\nAverage Evaluation Score") +
+  coord_flip() +
+  singlepanel_theme() +
+  guides(colour = guide_legend(override.aes = list(linetype=c(0,0)))) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    legend.direction = "vertical")
+
+# bottom panel ----------
+data_leaky <- reviews %>%
+  dplyr::filter(
+    !is.na(applicant_gender), # length(which(is.na(reviews$applicant_gender))) # ---> 31
+    !is.na(applicant_age)#, # length(which(is.na(reviews$applicant_age))) # ---> 33
+   # applicant_age > 2.5, applicant_age < 7
+    ) %>%
+  dplyr::mutate(
+    applicant_gender = recode(
+      applicant_gender, `m` = "Male", `f` = "Female"),
+    applicant_age = 10 * applicant_age,
+    applicant_age_range = plyr::round_any(applicant_age, 5, floor)) %>% # RH: added applicant_age_range
+  filter(
+      #applicant_age_range > 25, 
+    applicant_age_range < 75) %>% # as there are no femals in group 75
+  dplyr::count(applicant_gender, applicant_age_range)
+
+annotation <- data_leaky %>%
+  group_by(applicant_age_range) %>% # RH: changed applicant_age to applicant_age_range
+  summarise(
+    Female = 100 * n[applicant_gender == "Female"] / sum(n),
+    Male = 100 - Female)
+
+plot_gender_shares <- annotation %>%
+  tidyr::gather(gender, percentage, - applicant_age_range) %>% # RH: changed applicant_age to applicant_age_range
+  ggplot(mapping = aes(
+    x = applicant_age_range, # RH: changed applicant_age to applicant_age_range
+    y = percentage, # ifelse(gender == "Male", percentage, -percentage),
+    fill = reorder(gender, desc(gender)),
+    label = round(percentage, 1))) +
+  geom_bar(stat = "identity", color = "white") +
+  geom_text(
+    position = position_stack(vjust = .5), 
+    mapping = aes(color = reorder(gender, desc(gender))),
+    size = 2.5) +
+  guides(fill = FALSE, color = FALSE) + 
+  labs(
+    x = "Age Group\n",
+    y = "\nPercentage of Female (Left) and Male Applicants (Right)") +
+  scale_fill_manual(values = rev(ggsci::pal_uchicago()(2))) +
+  scale_color_manual(values = c("white", "white")) +
+  scale_y_continuous(expand = c(0, .5)) +
+  coord_flip() +
+  singlepanel_theme()
+
+# combine upper panel with bottom panel
+age_leaky <- ggpubr::ggarrange(plot_age, plot_gender_shares, 
+                               ncol = 1, nrow = 2, heights = c(2.3, 1))
+ggplot2::ggsave("../../fig/age_leaky.pdf", age_leaky, w = 5, h = 5)
+age_leaky
+```
+
+
+```{r means-age-update, echo=FALSE, fig.cap = "Upper panels: mean review scores by age group for both female (top) and male (bottom) applicants. Horizontal lines indicate the Wald confidence interval of the mean. Lower panel: Proportions of female and male applicants per age group. This figure does not include the age groups with very low counts to facilitate the interpretation.", fig.height=6}
+n_fun3 <- function(x) n_fun(x, x_space = .1)  # RH: increased space from .02 to .1
+# upper panel ---------
+plot_age <- reviews %>%
+  dplyr::filter(
+    !is.na(applicant_gender), # length(which(is.na(reviews$applicant_gender))) # ---> 31
+    !is.na(applicant_age)#, # length(which(is.na(reviews$applicant_age))) # ---> 33
+    #applicant_age > 2.5, applicant_age < 7
+    ) %>%
+  dplyr::mutate(
+    applicant_gender = recode(
+      applicant_gender, 
+      `m` = "Male Applicants", 
+      `f` = "Female Applicants"),
+    applicant_age = 10 * applicant_age,
+    applicant_age_range = plyr::round_any(applicant_age, 5, floor)) %>% # RH: added applicant_age_range
+  filter(
+      applicant_age_range > 25, 
+      applicant_age_range < 70) %>%  # RH: to make the graph comparable to JM's
+  ggplot(aes(x = applicant_age_range, y = overall_score)) + # RH: changed applicant_age to applicant_age_range
+  ggsci::scale_color_uchicago() +
+  ggsci::scale_fill_uchicago() +
+  stat_summary(fun.data = function(x) mean_se(x, mult = 1.96), # RH: changed mean_se to Wald CI
+               geom = "pointrange",
+               aes(color = applicant_gender, fill = applicant_gender), 
+               size = .4,
+               shape = 22, 
+               position = position_dodge(width = -3)) +
+  # stat_summary(fun.data = n_fun3, 
+  #              geom = "text", 
+  #              size = 2.5, 
+  #              aes(color = applicant_gender), 
+  #              position = position_dodge(width = -3)) +
+  labs(x = "Age Group\n", 
+       y = "\nAverage Evaluation Score") +
+  coord_flip() +
+  singlepanel_theme() +
+  guides(colour = guide_legend(override.aes = list(linetype=c(0,0)))) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    legend.direction = "vertical")
+
+# bottom panel ----------
+data_leaky <- reviews %>%
+  dplyr::filter(
+    !is.na(applicant_gender), # length(which(is.na(reviews$applicant_gender))) # ---> 31
+    !is.na(applicant_age)#, # length(which(is.na(reviews$applicant_age))) # ---> 33
+   # applicant_age > 2.5, applicant_age < 7
+    ) %>%
+  dplyr::mutate(
+    applicant_gender = recode(
+      applicant_gender, `m` = "Male", `f` = "Female"),
+    applicant_age = 10 * applicant_age,
+    applicant_age_range = plyr::round_any(applicant_age, 5, floor)) %>% # RH: added applicant_age_range
+  filter(
+      applicant_age_range > 25, 
+      applicant_age_range < 70) %>% # RH: to make the graph comparable to JM's
+  dplyr::count(applicant_gender, applicant_age_range)
+
+annotation <- data_leaky %>%
+  group_by(applicant_age_range) %>% # RH: changed applicant_age to applicant_age_range
+  summarise(
+    Female = 100 * n[applicant_gender == "Female"] / sum(n),
+    Male = 100 - Female)
+
+plot_gender_shares <- annotation %>%
+  tidyr::gather(gender, percentage, - applicant_age_range) %>% # RH: changed applicant_age to applicant_age_range
+  ggplot(mapping = aes(
+    x = applicant_age_range, # RH: changed applicant_age to applicant_age_range
+    y = percentage, # ifelse(gender == "Male", percentage, -percentage),
+    fill = reorder(gender, desc(gender)),
+    label = round(percentage, 1))) +
+  geom_bar(stat = "identity", color = "white") +
+  geom_text(
+    position = position_stack(vjust = .5), 
+    mapping = aes(color = reorder(gender, desc(gender))),
+    size = 2.5) +
+  guides(fill = FALSE, color = FALSE) + 
+  labs(
+    x = "Age Group\n",
+    y = "\nPercentage of Female (Left) and Male Applicants (Right)") +
+  scale_fill_manual(values = rev(ggsci::pal_uchicago()(2))) +
+  scale_color_manual(values = c("white", "white")) +
+  scale_y_continuous(expand = c(0, .5)) +
+  coord_flip() +
+  singlepanel_theme()
+
+# combine upper panel with bottom panel
+age_leaky <- ggpubr::ggarrange(plot_age, plot_gender_shares, 
+                               ncol = 1, nrow = 2, heights = c(2, 1))
+ggplot2::ggsave("../../fig/age_leaky_update.pdf", age_leaky, w = 5, h = 5)
+age_leaky
+```
+
+In Figure \@ref(fig:means-affiliation), we show summary statistics of the review scores by gender and by affiliation of the applicants. Grants submitted by researchers from the *ETH Domain* receive higher average scores than applications from *Cantonal Universities* or from *Other Research Institutes*.  Gender differences are more easily noticeable in the *ETH Domain* and *Other Research Institutions* than in *Cantonal Universities*.
+
+```{r means-affiliation, echo=FALSE, fig.cap = "Upper panels: Mean review scores by the affiation of the applicants. Point range indicates the Wald confidence interval of the mean. Lower panel: Proportions of female and male applicants by affiliation."}
+by_affiliation <- reviews %>%
+  dplyr::filter(!is.na(applicant_gender)) %>%
+  dplyr::mutate(
+    applicant_gender = recode(
+      applicant_gender, 
+      `m` = "Male Applicants", 
+      `f` = "Female Applicants"),
+    applicant_affiliation = fct_reorder(applicant_affiliation, overall_score, mean))
+
+plot_affiliation <- by_affiliation %>% 
+  ggplot(aes(x = applicant_affiliation, y = overall_score)) +
+  ggsci::scale_color_uchicago() +
+  ggsci::scale_fill_uchicago() +
+  stat_summary(fun.data = function(x) mean_se(x, mult = 1.96), # RH: changed mean_se to Wald CI
+               geom = "pointrange",
+               aes(color = applicant_gender, fill = applicant_gender), 
+               size = .4,
+               shape = 22, 
+               position = position_dodge(width = -.45)) +
+  # stat_summary(fun.data = n_fun, 
+  #              geom = "text", 
+  #              size = 2.5, 
+  #              aes(color = applicant_gender), 
+  #              position = position_dodge(width = -.45)) +
+  labs(x = "Affiliation\n", 
+       y = "\nAverage Evaluation Score") +
+  coord_flip() +
+  singlepanel_theme() +
+  guides(colour = guide_legend(override.aes = list(linetype=c(0,0)))) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    legend.direction = "vertical")
+
+gender_shares <- by_affiliation %>% 
+  dplyr::group_by(applicant_affiliation, applicant_gender) %>%
+  dplyr::summarise(n = n_distinct(applicant_id)) %>%
+  dplyr::mutate(percentage = 100 * n / sum(n)) %>%
+  dplyr::ungroup() %>%
+  ggplot(mapping = aes(
+    x = applicant_affiliation,
+    y = percentage, # ifelse(gender == "Male", percentage, -percentage),
+    fill = reorder(applicant_gender, desc(applicant_gender)),
+    label = round(percentage, 1))) +
+  geom_bar(stat = "identity", color = "white") +
+  geom_text(
+    position = position_stack(vjust = .5), 
+    mapping = aes(color = reorder(applicant_gender, desc(applicant_gender))),
+    size = 2.5) +
+  guides(fill = FALSE, color = FALSE) + 
+  labs(
+    x = "Affiliation\n",
+    y = "\nPercentage of Female (Left) and Male Applicants (Right)") +
+  scale_fill_manual(values = rev(ggsci::pal_uchicago()(2))) +
+  scale_color_manual(values = c("white", "white")) +
+  scale_y_continuous(expand = c(0, .5)) +
+  coord_flip() +
+  singlepanel_theme()
+
+affiliation_combined <- ggpubr::ggarrange(plot_affiliation, gender_shares, 
+                               ncol = 1, nrow = 2, heights = c(2, 1))
+ggplot2::ggsave("../../fig/affiliation.pdf", affiliation_combined, w = 5, h = 4)
+affiliation_combined
+```
+
+Another possible source of bias could be the nationality of grant applicants. In Figure \@ref(fig:means-nationality), we again show summary statistics of the review scores by gender and by nationality if the applicants. Both national and foreign male applicants receive higher reviews scores than their female counterparts, on average, with foreign national scoring slightly above Swiss nationals on average.
+
+```{r means-nationality, echo=FALSE, fig.cap = "Mean review scores by the nationality of the applicant type. Point range indicates the Wald confidence interval of the mean."}
+n_fun1 <- function(x) n_fun(x, .03) # RH: changed .01 to .03
+plot_nationality <- reviews %>%
+  dplyr::filter(
+    !is.na(applicant_gender), 
+    !is.na(applicant_nationality)) %>%
+  dplyr::mutate(
+    applicant_nationality = recode(
+      applicant_nationality, 
+      `ch` = "Swiss", 
+      `int` = "Other"), 
+    applicant_gender = recode(
+      applicant_gender, 
+      `m` = "Male Applicants", 
+      `f` = "Female Applicants")) %>% 
+  ggplot(aes(x = applicant_nationality, y = overall_score)) +
+  ggsci::scale_color_uchicago() +
+  ggsci::scale_fill_uchicago() +
+  stat_summary(fun.data = function(x) mean_se(x, mult = 1.96), # RH: changed mean_se to Wald CI 
+               geom = "pointrange",
+               aes(color = applicant_gender, fill = applicant_gender), 
+               size = .4,
+               shape = 22, 
+               position = position_dodge(width = -.15)) +
+  # stat_summary(fun.data = n_fun1, 
+  #              geom = "text", 
+  #              size = 2.5, 
+  #              aes(color = applicant_gender), 
+  #              position = position_dodge(width = -.15)) +
+  labs(x = "Nationality\n", 
+       y = "\nAverage Evaluation Score") +
+  coord_flip() +
+  guides(colour = guide_legend(override.aes = list(linetype=c(0,0)))) +
+  singlepanel_theme() +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    legend.direction = "vertical")
+  # ylim(3.5, 5.5) +
+ggplot2::ggsave("../../fig/nationality.pdf", plot_nationality, w = 5, h = 2.5)
+plot_nationality
+```
+
+Last, Figure \@ref(fig:means-date) illustrates the introduction of new guidelines for reviewers in 2011-10-01.  Grant applications submitted before 2011-10-01 show significantly 
+higher average scores than the more recent applications.  We account for this shift in the distribution of review scores with a dummy variable (`call_cut`) which groups grant applications according to whether they were submitted before or after the introduction of the newer reviewing guidelines.
+
+```{r means-date, echo=FALSE, fig.cap = "Mean review scores by call deadline. Point range indicates Wald confidence intervals of the mean."}
+plot_date <- reviews %>%
+  dplyr::filter(!is.na(applicant_gender)) %>%
+  dplyr::mutate(
+    applicant_gender = recode(
+      applicant_gender, `m` = "Male Applicants", `f` = "Female Applicants")) %>% 
+  ggplot(aes(x = call_end_date, y = overall_score)) +
+  ggsci::scale_color_uchicago() +
+  ggsci::scale_fill_uchicago() +
+  stat_summary(fun.data = function(x) mean_se(x, mult = 1.96), # RH: changed mean_se to Wald CI
+               aes(color = applicant_gender, fill = applicant_gender),
+               geom = "pointrange",
+               size = .4, shape = 22,
+               position = position_dodge(width = -100)) +
+  #stat_summary(fun.data = n_fun2, geom = "text", size = 2.5, color = "gray10") +
+  labs(x = "Call Date\n", y = "\nAverage Evaluation Score") +
+  coord_flip() +
+  guides(colour = guide_legend(override.aes = list(linetype=c(0,0)))) +
+  singlepanel_theme() + 
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    legend.direction = "vertical") 
+ggplot2::ggsave("../../fig/date.pdf", plot_date, w = 5, h = 2.5)
+plot_date
+```
+
+## Estimating the Effect of Each Variable
+
+To quantify the effect of each variable on the observed mean differences, we fit the data points to a linear mixed effects model [@lmer4].  This type of model extends the linear model in that it accounts for both random and fixed types of effects [@harrison2018brief] and is often preferred over ordinal mixed effects models when the dependent variable has 5 or more levels.  
+
+<aside>
+An ordinal mixed effects models are also appropriate when the target variable is not continuous [@ordinal].
+</aside>
+
+First, we explore which random effect to include by adding random effects step-wise and measuring the relative gain in predictive power using Akaike’s Information Criterion (AIC) and Chi-squared comparisons.  Then, we proceed by adding the fixed effects. 
+
+###  Data manipulations before modelling
+```{r complete case, echo = FALSE}
+# table(reviews$applicant_affiliation)
+# table(reviews$research_topic)
+
+complete_case <- reviews %>% 
+  filter(
+    !is.na(applicant_gender),
+    !is.na(applicant_age),
+    !is.na(applicant_affiliation),
+    !is.na(applicant_nationality),
+    !is.na(nomination_source),
+    !is.na(reviewer_gender),
+    !is.na(review_origin),
+    !is.na(research_topic)
+  ) %>% 
+  mutate(
+    research_topic = as.factor(research_topic),
+    research_topic = relevel(research_topic, ref = 'Medicine'),
+    applicant_affiliation = as.factor(applicant_affiliation),
+    applicant_affiliation = relevel(applicant_affiliation, ref = 'Universities'),
+    call_cut = as.factor(call_cut),
+    call_cut = relevel(call_cut, ref = 'older')
+  )
+
+```
+
+To make a comparison of the later univariate or crude estimates and multivariate or adjusted estimates feasible we proceed to a 'complete case' analysis. Otherwise the models with variables without any missings are developed on the whole dataset with `r prettyNum(nrow(reviews), big.mark = "'")` observations while the full model includes variable with some missings leading to a development dataset with only `r prettyNum(nrow(complete_case), big.mark = "'")` reviews. Hence, we will reduce the dataset used for all modelling to the set of `r prettyNum(nrow(complete_case), big.mark = "'")` (`r round(nrow(complete_case)/nrow(reviews) * 100, 1)`%) observations.  
+A second small data manipulation is the releveling of the two factors in the adjusted model, 'applicant\_affiliation' and 'research\_topic'. The reference of the factors will simply be the level with the highest count, which is 'Universities' for the affiliation and 'Medicine' for the research topic. 
+The following Table presents some summary statistics of this complete data set.
+
+```{r overview complete, echo=FALSE}
+# trying to automatise the TABLE 3 in the APPENDIX output: 
+reviews_sum <- complete_case %>%
+  summarise(factor = NA, n = n(), proportion = NA, mean = 
+              round(mean(overall_score), 2), sd = round(sd(overall_score), 2))
+getSum <- function(group_variable){
+  DF <- complete_case %>% 
+    group_by(get(group_variable)) %>% 
+    summarise(n = n(), proportion = round(n()/37989*100, 2), 
+              mean = round(mean(overall_score), 2),
+              sd = round(sd(overall_score),2)) 
+  names(DF)[1] <- 'factor'
+  if (is.date(DF$factor))  DF$factor <- as.character(DF$factor)
+  return(DF)
+}
+
+getSum_age <- function(){
+  DF <- complete_case %>% 
+    mutate(age_range = round_any(applicant_age*10, 5, floor)) %>% 
+    group_by(age_range) %>% 
+    summarise(n = n(), proportion = round(n()/37989*100, 2), 
+              mean = round(mean(overall_score), 2), sd = round(sd(overall_score),2)) 
+  names(DF)[1] <- 'factor'
+  return(DF)
+} 
+
+TABLE3_bis <- cbind(c('Total overview', 'research_topic', rep(' ', 11),
+                      'call_end_date', rep(' ', 14), 'nomination_source', ' ', 'review_origin', ' ',
+                      'reviewer_gender', ' ', 'applicant_gender', ' ',
+                      'applicant_nationality', ' ',  'applicant_affiliation', rep(' ', 2),
+                      'call_cut', ' ',
+                      'age group', rep(' ', 10)),
+                    rbind(reviews_sum, getSum('research_topic'),
+                          getSum('call_end_date'), getSum('nomination_source'), 
+                          getSum('review_origin'), getSum('reviewer_gender'),
+                          getSum('applicant_gender'), getSum('applicant_nationality'),
+                          getSum('applicant_affiliation'), getSum('call_cut'), getSum_age()))
+colnames(TABLE3_bis) <- c('Variable', 'level', 'n', 'proportion', 'avg approved', 'sd')
+rmarkdown::paged_table(TABLE3_bis)
+
+# median(complete_case$applicant_age) # 4.7
+```
+
+### Random Effects
+
+```{r model-base, eval = TRUE, cache = TRUE}
+# save fittings to files to compile the notebook independently
+# to force fitting: `eval = TRUE`
+
+write_model_1 <- function(file_name) {
+  lme4::lmer(
+    overall_score ~ 
+    call_cut +
+    (1 | project_id) + 
+    (1 | reviewer_id), data = complete_case) %>%
+    readr::write_rds(path = file_name, compress = "bz")
+}
+
+write_model_2 <- function(file_name) {
+  lme4::lmer(
+    overall_score ~ 
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | project_id) + 
+    (1 | reviewer_id), data = complete_case) %>%
+  readr::write_rds(path = file_name, compress = "bz")
+}
+
+write_model_3 <- function(file_name) {
+  lme4::lmer(
+    overall_score ~ 
+    call_cut +
+    (1 | call_end_date) +
+    (1 | applicant_id) + 
+    (1 | project_id) + 
+    (1 | reviewer_id), data = complete_case) %>%
+  readr::write_rds(path = file_name, compress = "bz")
+}
+
+write_model_4 <- function(file_name) {
+  lme4::lmer(
+    overall_score ~ 
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | reviewer_id), data = complete_case) %>%
+  readr::write_rds(path = file_name, compress = "bz")
+}
+
+## simplest linear mixed effects model
+write_model_1("../data/model1.rds.bz2")
+write_model_2("../data/model2.rds.bz2")
+write_model_3("../data/model3.rds.bz2")
+write_model_4("../data/model4.rds.bz2")
+## pairwise model comparison
+model_1 <- readr::read_rds("../data/model1.rds.bz2")
+model_2 <- readr::read_rds("../data/model2.rds.bz2")
+model_3 <- readr::read_rds("../data/model3.rds.bz2")
+anova_12 <-  anova(model_1, model_2) 
+anova_23 <-  anova(model_2, model_3)
+# anova_42 <-  anova(model_4, model_2)
+readr::write_rds(anova_12, path = "../data/anova12.rds.bz2", compress = "bz")
+readr::write_rds(anova_23, path = "../data/anova23.rds.bz2", compress = "bz")
+```
+
+As already mentioned, each grant application typically receives more than one independent review, with each reviewer being able to review more than one grant application over the time period considered.  
+
+We start by explaining the overall score (`overall_score`) as a function of the dummy variable `call_cut`, accounting for introduction of new reviewing guidelines in 2011-10-01, and two random effects, one accounting for the `project_id` (unique identifier of a grant application), the other accounting for the `reviewer_id` (unique identifier a reviewer).  In `R`, we write a first model (`model_1`) as follows:  
+
+```{model1, echo = TRUE}
+lme4::lmer(score ~ call_cut + 
+                   (1|project_id) + (1|reviewer_id))
+```
+
+<aside>
+We include the fixed effect of the dummy variable `call_cut` in all three models to ensure compatibility in comparing models one and two with model three.
+</aside>
+
+```{r, cache = TRUE}
+model_1 <- readr::read_rds("../data/model1.rds.bz2")
+# knitr::kable(broom::tidy(model_1), digits = 3,
+#       col.names = c("Term", "Estimate", "SE", "t-Statistic", "Group"),
+#       caption = "Summary statistics for model_1.")
+sjPlot::tab_model(
+  model_1, 
+  digits = 2,
+  emph.p = FALSE,  
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE, 
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  title = "Summary statistics for model_1.")
+```
+
+In a second random effects model (`model_2`), we add a random effect accounting for the `applicant_id` (unique identifier of a grant applicant) to account for the fact that each applicant may submit more than one grant application.  In `R`, the model is written as:  
+
+```{model2, echo = TRUE}
+lme4::lmer(score ~ call_cut + 
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+```{r, cache = TRUE}
+model_2 <- readr::read_rds("../data/model2.rds.bz2")
+# kable(tidy(model_2), digits = 3,
+#       col.names = c("Term", "Estimate", "SE", "t-Statistic", "Group"),
+#       caption = "Summary statistics for model_2.")
+sjPlot::tab_model(
+  model_2, 
+  digits = 2,
+  emph.p = FALSE,
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE, 
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  title = "Summary statistics for model_2.")
+```
+
+
+Last, in a third random effects model (`model_3`), we add a random effect accounting for the `call_end_date`, to account for any possible correlations across calls which might not be yet explained by the dummy variable `call_cut`:  
+
+```{model3, echo = TRUE}
+lme4::lmer(score ~ call_cut + 
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id) + 
+                   (1|call_end_date))
+```
+
+
+```{r, cache = TRUE}
+model_3 <- readr::read_rds("../data/model3.rds.bz2")
+# kable(tidy(model_3), digits = 3,
+#       col.names = c("Term", "Estimate", "SE", "t-Statistic", "Group"),
+#       caption = "Summary statistics for model_3.")
+sjPlot::tab_model(
+  model_3, 
+  digits = 2, 
+  emph.p = FALSE,
+  show.se = TRUE,
+  show.stat = TRUE,
+  collapse.ci = TRUE, 
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  title = "Summary statistics for model_3.")
+```
+
+An analysis of the random effects of the three models shows that the second model significantly reduces the residual sum of squares of the first model (see Table \@ref(tab:anova12)).
+
+```{r anova12, eval=TRUE}
+readr::read_rds("../data/anova12.rds.bz2") %>% 
+  broom::tidy() %>%
+  kable(
+    caption = "Pairwise comparison of the residual sum 
+    of squares between the first and second models.",
+    col.names = c("Model", "Df", "AIC", "BIC", 
+                  "logLik", "deviance", 
+                  "Chisq", "Df", "Pr(>Chisq)")) %>%
+  kable_styling( 
+    bootstrap_options = c("striped", "hover", "responsive"),
+    full_width = FALSE)
+
+# https://stats.stackexchange.com/questions/127509/how-to-determine-whether-a-variable-is-significant-using-pr-chi-and-df
+# https://stats.idre.ucla.edu/sas/output/proc-logistic/
+```
+
+The third model, however, accounting for an extra random effect for the `call_end_date` does not improve the second model significantly (see Table \@ref(tab:anova23)).  We will therefore use the second model as the basis to measure possible fixed effects of remaining factors.
+
+```{r anova23, eval=TRUE}
+readr::read_rds("../data/anova23.rds.bz2") %>% 
+  tidy() %>%
+  kable(
+    caption = "Pairwise comparison of the residual sum 
+    of squares between the second and third models.",
+    col.names = c("Model", "Df", "AIC", "BIC", 
+                  "logLik", "deviance", 
+                  "Chisq", "Df", "Pr(>Chisq)")) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "responsive"),
+    full_width = FALSE)
+```
+
+
+
+```{r, eval=FALSE, cache = TRUE}
+readr::read_rds("../data/anova12.rds.bz2") %>%
+sjPlot::tab_model(model_1, model_2)
+sjPlot::tab_model(model_1, model_2, model_3)
+```
+
+### Fixed Effects
+
+```{r crude_fixed, eval = TRUE, include = TRUE, cache = TRUE}
+# crude effect models
+write_crude_0 <- function(file_name) {
+  lme4::lmer( 
+    overall_score ~ 
+    review_origin + 
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | project_id) + 
+    (1 | reviewer_id), data = complete_case) %>%
+  readr::write_rds(path = file_name, compress = "bz")
+}
+
+write_crude_1 <- function(file_name) {
+  lme4::lmer(
+    overall_score ~ 
+    applicant_gender + 
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | project_id) + 
+    (1 | reviewer_id), data = complete_case) %>%
+  readr::write_rds(path = file_name, compress = "bz")
+}
+
+write_crude_2 <- function(file_name) {
+  lme4::lmer(
+    overall_score ~ 
+    reviewer_gender + 
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | project_id) + 
+    (1 | reviewer_id), data = complete_case) %>%
+  readr::write_rds(path = file_name, compress = "bz")
+}
+
+write_crude_3 <- function(file_name) {
+  lme4::lmer(
+    overall_score ~ 
+    nomination_source + 
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | project_id) + 
+    (1 | reviewer_id), data = complete_case) %>%
+  readr::write_rds(path = file_name, compress = "bz")
+}
+
+write_crude_0("../data/crude0.rds.bz2")
+write_crude_1("../data/crude1.rds.bz2")
+write_crude_2("../data/crude2.rds.bz2")
+write_crude_3("../data/crude3.rds.bz2")
+crude_0 <- readr::read_rds("../data/crude0.rds.bz2")
+crude_1 <- readr::read_rds("../data/crude1.rds.bz2")
+crude_2 <- readr::read_rds("../data/crude2.rds.bz2")
+crude_3 <- readr::read_rds("../data/crude3.rds.bz2")
+# sjt.lmer(crude_0, crude_1, crude_2, crude_3, p.kr = FALSE)
+```
+
+Using the model accounting for the random effects of both applicants and reviewers, we first look at the crude fixed effects regarding:
+
+  1. **the origin of the review**
+
+```{crude0, echo = TRUE}
+lme4::lmer(score ~ call_cut + review_origin +
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+```{r, cache = TRUE}
+# knitr::kable(broom::tidy(crude_0), digits = 3,
+#       col.names = c("Term", "Estimate", "SE", "t-Statistic", "Group"),
+#       caption = "Summary statistics for the crude effect related to 
+#                  the country of affiliation of the reviewer.")
+sjPlot::tab_model(
+  crude_0, 
+  digits = 2, 
+  emph.p = FALSE,
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE, 
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  pred.labels = c("(Intercept)", "Reviewer: Swiss-Based", "Call Cut: 2009--2011"),
+  title = "Summary statistics for the crude effect related 
+           to the country of affiliation of the reviewer.")
+# https://cran.r-project.org/web/packages/sjstats/vignettes/mixedmodels-statistics.html
+```
+  
+  2. **the gender of the applicant**
+  
+```{crude1, echo = TRUE}
+lme4::lmer(score ~ call_cut + applicant_gender +
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+```{r, cache = TRUE}
+# knitr::kable(broom::tidy(crude_1), digits = 3,
+#       col.names = c("Term", "Estimate", "SE", "t-Statistic", "Group"),
+#       caption = "Summary statistics for the crude effect related to the gender of the applicant.")
+sjPlot::tab_model(
+  crude_1,
+  digits = 2, 
+  emph.p = FALSE,
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE,
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  pred.labels = c("(Intercept)", "Applicant: Male", "Call Cut: 2009--2011"),
+  title = "Summary statistics for the crude effect related 
+           to the gender of the applicant.")
+```
+
+  3. **the gender of the reviewer**
+  
+```{crude2, echo = TRUE}
+lme4::lmer(score ~ call_cut + reviewer_gender +
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+```{r, cache = TRUE}
+# knitr::kable(broom::tidy(crude_2), digits = 3,
+#       col.names = c("Term", "Estimate", "SE", "t-Statistic", "Group"),
+#       caption = "Summary statistics for the crude effect related to the gender of the reviewer.")
+sjPlot::tab_model(
+  crude_2, 
+  digits = 2,
+  emph.p = FALSE,
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE, 
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  pred.labels = c("(Intercept)", "Reviewer: Male", "Call Cut: 2009--2011"),
+  title = "Summary statistics for the crude effect related 
+           to the gender of the reviewer.")
+```
+
+  4. **reviewer's nomination source**
+
+```{crude3, echo = TRUE}
+lme4::lmer(score ~ call_cut + nomination_type +
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+```{r, cache = TRUE}
+# kable(tidy(crude_3), digits = 3,
+#       col.names = c("Term", "Estimate", "SE", "t-Statistic", "Group"),
+#       caption = "Summary statistics for the crude effect related to the source of nomination of the reviewer.")
+sjPlot::tab_model(
+  crude_3, 
+  digits = 2, 
+  emph.p = FALSE,
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE,
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  pred.labels = c("(Intercept)", "Nomination: SNSF", "Call Cut: 2009--2011"),
+  title = "Summary statistics for the crude effect related 
+           to the source of nomination of the reviewer.")
+```
+
+  (5. **the age of applicant**)
+
+```{crude4, echo = TRUE}
+lme4::lmer(score ~ applicant_age + call_cut +
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+```{r, cache = TRUE}
+crude_4 <- 
+  lme4::lmer(overall_score ~ applicant_age + call_cut  +
+               (1|project_id) + (1|reviewer_id) + 
+               (1|applicant_id),
+             data = complete_case)
+
+sjPlot::tab_model(
+  crude_4, 
+  digits = 2, 
+  emph.p = FALSE,
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE,
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  pred.labels = c("(Intercept)", "Applicant Age", "Call Cut: 2009--2011"),
+  title = "Summary statistics for the crude effect related 
+           to the age of the applicant.")
+```
+
+  (6. **the affiliation of applicant**)
+
+```{crude5, echo = TRUE}
+lme4::lmer(score ~ applicant_affiliation + call_cut +
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+```{r, cache = TRUE}
+crude_5 <- 
+  lme4::lmer(overall_score ~ applicant_affiliation + call_cut +
+               (1|project_id) + (1|reviewer_id) + 
+               (1|applicant_id),
+             data = complete_case)
+
+sjPlot::tab_model(
+  crude_5, 
+  digits = 2, 
+  emph.p = FALSE,
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE,
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  pred.labels = c("(Intercept)", "Applicant Affil.: ETH Domain",
+    "Applicant Affil.: Other", "Call Cut: 2009--2011"),
+  title = "Summary statistics for the crude effect related 
+           to the affiliation of the applicant.")
+```
+
+```{r, cache = TRUE}
+model0_affiliation_crude <- 
+  lme4::lmer(overall_score ~ call_cut + 
+               (1|project_id) + (1|reviewer_id) + 
+               (1|applicant_id),
+             data = complete_case)
+aov_affiliation_crude <- anova(crude_5, model0_affiliation_crude)
+```
+To see whether there actually is an effect of the affiliation we seek for a single p-value for this varible by applying the anova function on the models with and without the specific variable.  
+
+```{r, echo = FALSE}
+aov_affiliation_crude %>% 
+  tidy() %>%
+  kable(
+    caption = "Pairwise comparison of the residual sum to judge wether applicant affiliation has an effect on the score (only crude effect, unadjusted).",
+    col.names = c("Model", "Df", "AIC", "BIC", 
+                  "logLik", "deviance", 
+                  "Chisq", "Df", "Pr(>Chisq)")) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "responsive"),
+    full_width = FALSE)
+
+```
+
+  (7. **the nationality of applicant**)
+
+```{crude6, echo = TRUE}
+lme4::lmer(score ~ applicant_nationality + call_cut + 
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+```{r, cache = TRUE}
+crude_6 <- 
+  lme4::lmer(overall_score ~ applicant_nationality + call_cut + 
+               (1|project_id) + (1|reviewer_id) + 
+               (1|applicant_id),
+             data = complete_case)
+
+sjPlot::tab_model(
+  crude_6, 
+  digits = 2, 
+  emph.p = FALSE,
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE,
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  pred.labels = c("(Intercept)", "App. Nationality: Foreign", "Call Cut: 2009--2011"),
+  title = "Summary statistics for the crude effect related 
+           to the nationality of the applicant.")
+```
+
+  (8. **the research topic**)
+
+```{crude7, echo = TRUE}
+lme4::lmer(score ~ research_topic + call_cut + 
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+```{r, cache = TRUE}
+crude_7 <- 
+  lme4::lmer(overall_score ~ research_topic + call_cut + 
+               (1|project_id) + (1|reviewer_id) + 
+               (1|applicant_id),
+             data = complete_case)
+
+sjPlot::tab_model(
+  crude_7, 
+  digits = 2, 
+  emph.p = FALSE,
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE,
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  pred.labels = c("(Intercept)", "Topic: Architecture",
+    "Topic: Biology",
+    "Topic: Chemistry",
+    "Topic: Economics",
+    "Topic: Engineering",
+    "Topic: Geology",
+    "Topic: History",
+    "Topic: Linguistics",
+    "Topic: Math/Phys",
+    "Topic: Psychology",
+    "Topic: Sociology", "Call Cut: 2009--2011"),
+  title = "Summary statistics for the crude effect related 
+           to the research topic.")
+```
+
+```{r, cache = TRUE}
+model0_topic_crude <- 
+  lme4::lmer(overall_score ~ call_cut + 
+               (1|project_id) + (1|reviewer_id) + 
+               (1|applicant_id),
+             data = complete_case)
+aov_topic_crude <- anova(crude_7, model0_topic_crude)
+```
+To see whether there actually is an effect of the research topic we seek for a single p-value for this varible by applying the anova function on the models with and without the specific variable.  
+
+```{r, echo = FALSE}
+aov_topic_crude %>% 
+  tidy() %>%
+  kable(
+    caption = "Pairwise comparison of the residual sum to judge wether research topic type has an effect on the score (only crude effect, unadjusted).",
+    col.names = c("Model", "Df", "AIC", "BIC", 
+                  "logLik", "deviance", 
+                  "Chisq", "Df", "Pr(>Chisq)")) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "responsive"),
+    full_width = FALSE)
+
+```
+
+Finally, we look at the corresponding adjusted effects when accounting for the all factors together. In `R`, we write the model as follows: 
+
+```{adjusted, echo = TRUE}
+lme4::lmer(score ~ call_cut + 
+                   nomination_type + research_topic +
+                   applicant_gender + applicant_age +
+                   applicant_affiliation + applicant_nationality +
+                   review_origin + reviewer_gender + 
+                   (1|project_id) + (1|reviewer_id) + (1|applicant_id))
+```
+
+
+When accounting for the all factors, the adjusted effects regarding the origin of the reviews and source of nomination remain of the same order of magnitude as their corresponding unadjusted effects.  The effects related to gender, however, nearly vanish.  The adjusted effect of the gender of the applicants falls by more than 50% of its original unadjusted value, while the adjusted effect of the gender of the reviewer decreases by approximately 30% of its previous unadjusted value.  This result indicates that most of the initially effect attributed to gender can be due to differences of average scores between topics and affiliation.  Interestingly, applicants' age showed little effect whereas nationality showed no effect on the mean of review scores.
+
+```{r adjusted-fixed, eval=TRUE, include=TRUE, cache=TRUE}
+write_adjusted <- function(file_name) {
+  lme4::lmer(
+    overall_score ~ 
+    applicant_gender + 
+    applicant_age +
+    applicant_affiliation +
+    applicant_nationality +
+    nomination_source + 
+    reviewer_gender + 
+    review_origin +
+    research_topic +
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | project_id) + 
+    (1 | reviewer_id), data = complete_case) %>%
+  readr::write_rds(path = file_name, compress = "bz")
+}
+
+write_adjusted("../data/adjusted.rds.bz2")
+adjusted <- readr::read_rds("../data/adjusted.rds.bz2")
+
+# kable(broom::tidy(adjusted), digits = 3,
+#       col.names = c("Term", "Estimate", "SE", "t-Statistic", "Group"),
+#       caption = "Summary statistics adjusting for all the available variables.")
+sjPlot::tab_model(
+  adjusted, 
+  digits = 2,
+  emph.p = FALSE,
+  # rm.terms = "call_cutolder",
+  show.se = TRUE, 
+  show.stat = TRUE,
+  collapse.ci = TRUE,
+  linebreak = FALSE,
+  string.se = "SE", 
+  string.stat = "t-Statistic", 
+  string.p = "P-Value", 
+  string.pred = "Coefficient",
+  pred.labels = c(
+    "(Intercept)",
+    "Applicant: Male",
+    "Applicant Age",
+    "Applicant Affil.: ETH Domain",
+    "Applicant Affil.: Other",
+    "App. Nationality: Foreign",
+    "Nomination: SNSF",
+    "Reviewer: Male",
+    "Reviewer: Swiss-Based",
+    "Topic: Architecture",
+    "Topic: Biology",
+    "Topic: Chemistry",
+    "Topic: Economics",
+    "Topic: Engineering",
+    "Topic: Geology",
+    "Topic: History",
+    "Topic: Linguistics",
+    "Topic: Math/Phys",
+    "Topic: Psychology",
+    "Topic: Sociology",
+    "Call Cut: 2009--2011"),
+  title = "Summary statistics for the model 
+           adjusting for all the available variables.")
+```
+
+
+
+```{r pvalue factors, cache = TRUE}
+model0_affiliation <- 
+  lme4::lmer( 
+    overall_score ~
+    applicant_gender + 
+    applicant_age +
+    applicant_nationality +
+    nomination_source + 
+    reviewer_gender +
+    review_origin +
+    research_topic + 
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | project_id) +
+    (1 | reviewer_id), data = complete_case)
+aov_affiliation <- anova(adjusted, model0_affiliation)
+pval_affiliation <- aov_affiliation$`Pr(>Chisq)`[2]
+
+readr::write_rds(aov_affiliation, path = "../data/aov_affiliation.rds.bz2", compress = "bz")
+
+model0_topic <- 
+  lme4::lmer(
+    overall_score ~ 
+    applicant_gender + 
+    applicant_age +
+    applicant_nationality +
+    applicant_affiliation +
+    nomination_source + 
+    reviewer_gender +
+    review_origin +
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | project_id) + 
+    (1 | reviewer_id), data = complete_case)
+aov_topic <- anova(adjusted, model0_topic)
+readr::write_rds(aov_topic, path = "../data/aov_topic.rds.bz2", compress = "bz")
+```
+
+Again, to get a single p-value for the categorical varibles in the model we do likelihood ratio tests, as seen in the tables below.
+
+
+```{r, echo = FALSE}
+readr::read_rds("../data/aov_affiliation.rds.bz2") %>% 
+  tidy() %>%
+  kable(
+    caption = "Pairwise comparison of the residual sum to judge wether affiliation type has an effect on the score.",
+    col.names = c("Model", "Df", "AIC", "BIC", 
+                  "logLik", "deviance", 
+                  "Chisq", "Df", "Pr(>Chisq)")) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "responsive"),
+    full_width = FALSE)
+
+```
+
+```{r, echo = FALSE}
+readr::read_rds("../data/aov_topic.rds.bz2") %>% 
+  tidy() %>%
+  kable(
+    caption = "Pairwise comparison of the residual sum to judge wether research topic has an effect on the score.",
+    col.names = c("Model", "Df", "AIC", "BIC", 
+                  "logLik", "deviance", 
+                  "Chisq", "Df", "Pr(>Chisq)")) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "responsive"),
+    full_width = FALSE)
+
+```
+
+
+## Interactions with gender of the applicant
+We are now interested in possible interactions between the fixed effect variables in the upper model with the gender of the applicants, meaning that some overall score effects might be different among female and male applicants. In the following, we show all the tables used to write the interaction part of the manuscript.
+
+### _Age of the applicants:_
+
+```{r functions libs for interaction and a small data change, echo = FALSE}
+library(texreg)
+library(xtable)
+library(rowr)
+
+complete_case <- complete_case %>% 
+  mutate(applicantID = applicant_id,
+         projectID = project_id,
+         reviewerID = reviewer_id)
+
+table_extracts_2MODELS <- function(models_list, label, caption,
+                                   colnames_table = NULL){
+  extraction <- lapply(seq_along(models_list), function(i) 
+    texreg::extract(models_list[[i]], include.aic = FALSE,
+                    include.bic = FALSE, include.loglik = FALSE))
+  pVals <- lapply(seq_along(extraction), function(i) 
+    format.pval(extraction[[i]]@pvalues, digits = 4,
+                eps = 0.0001, scientific = FALSE))
+  ci <- lapply(seq_along(extraction), function(i)
+    paste0('[', round(extraction[[i]]@coef - 1.96* extraction[[i]]@se, 3), 
+           '; ' , round(extraction[[i]]@coef + 1.96* extraction[[i]]@se, 3),
+           ']'))
+  SUPPL <- 
+    c('\\hline',
+      sapply(seq_along(extraction[[1]]@gof),
+             function(j) paste0(extraction[[1]]@gof.names[j],
+                                ' & ', round(extraction[[1]]@gof[j], 3),
+                                ' & &', 
+                                ifelse(length(models_list)>1 ,
+                                       paste0('&', round(extraction[[2]]@gof[j],
+                                                         3), ' & & \\\\\n'),
+                                       '\\\\\n'))))
+  tab <- 
+    lapply(seq_along(extraction),
+           function(i) cbind(round(extraction[[i]]@coef, 3),
+                             ci[[i]], pVals[[i]]))
+  
+  cbind.fill2 <- function(...) cbind.fill(..., fill = NA)
+  TAB <- do.call(cbind.fill2,tab)
+  options(xtable.comment = FALSE)
+  if (is.null(colnames_table)) 
+    colnames_table <- c('with interaction', '', '',
+                        'without interaction', '', '')
+  kableExtra::kable(TAB, format = 'html',
+                    col.names = colnames_table,
+                    caption = caption, center = TRUE)#,
+  #sanitize.colnames.function=function(x) {x},
+        #add.to.row = addtorow, 
+        #include.colnames = FALSE,
+        #table.placement="H", size = 'small', type = 'html')
+}
+
+```
+
+
+```{r with int age and gender, cache = TRUE, message = FALSE}
+model_genderAGE <- lme4::lmer(
+    overall_score ~ 
+    applicant_age*applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderAGE_NULL <- lme4::lmer(
+    overall_score ~ 
+    applicant_age + applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderAGE_adjusted <- lme4::lmer(
+    overall_score ~ 
+    applicant_gender*applicant_age +
+    applicant_affiliation +
+    applicant_nationality +
+    nomination_source + 
+    reviewer_gender + 
+    review_origin +
+    research_topic +
+    call_cut +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+```
+
+```{r, message = TRUE}
+table_extracts_2MODELS(models_list = list(model_genderAGE,
+                                          model_genderAGE_NULL),
+                       caption = 'Summary of a model with interactions between the applicants gender and age, compared to the one with only main effects.')
+```
+
+
+```{r adjusted-int-age-and-gender-table, message = FALSE, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderAGE_adjusted), 
+                       caption = 'Summary of the adjusted model with interactions between the applicants gender and age.',
+                       colnames_table = c('Full model with interaction', '',''))
+```
+
+```{r, fig.height=3, fig.align='center', fig.cap='Interaction plot between gender and age of the applicant.\\label{fig:fig_age}'}
+p_unadjust <- 
+  sjPlot::plot_model(model_genderAGE, title = 'Unadjusted Model',
+                     type = 'pred', terms = c('applicant_age',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  ggsci::scale_fill_uchicago(name = " ") +
+  theme_minimal() 
+p_adjust <- 
+  sjPlot::plot_model(model_genderAGE_adjusted,
+                     type = 'pred', title = 'Adjusted Model', 
+                     terms = c('applicant_age', 'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  ggsci::scale_fill_uchicago(name = " ") +
+  theme_minimal() 
+cowplot::plot_grid(p_unadjust, p_adjust, labels = c('A', 'B'))
+```
+
+### _Gender of the reviewer_
+
+```{r full with int gender and gender, cache = TRUE}
+model_genderGENDER <- lme4::lmer(
+    overall_score ~ 
+    reviewer_gender*applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case)
+
+model_genderGENDER_NULL <- lme4::lmer(
+    overall_score ~ 
+    reviewer_gender + applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderGENDER_adjusted <- lme4::lmer(
+    overall_score ~ 
+    applicant_gender * reviewer_gender+
+    applicant_age +
+    applicant_affiliation +
+    applicant_nationality +
+    nomination_source +   
+    review_origin +
+    research_topic +
+    call_cut +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+```
+
+```{r int-gender-and-gender-table, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderGENDER,
+                                          model_genderGENDER_NULL),
+                       caption = 'Summary of a model with interaction between the applicant`s gender and reviewer`s gender, compared to the one with only main effects.')
+```
+
+```{r, message = FALSE, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderGENDER_adjusted),
+                       caption = 'Summary of the \\textbf{adjusted} model with interaction between the applicant`s gender and reviewer`s gender,', 
+                       colnames_table = c('Full model with interaction', '',''),
+                       label = 'table:model_genderGENDER_adjusted')
+```
+
+```{r, results='asis', message = FALSE}
+aov_gender <- car::Anova(model_genderGENDER, type = 3)
+aov_gender$`Pr(>Chisq)` <- format.pval(aov_gender$`Pr(>Chisq)`,
+                                       digits = 4, eps = 0.001)
+kable(aov_gender,
+      caption = 'Analysis of Variance Table of type III of the model with gender interaction', table.placement="H", size = 'small')
+```
+
+```{r, results='asis', message = FALSE}
+aov_gender_adjusted <-
+  car::Anova(model_genderGENDER_adjusted, type = 3)
+aov_gender_adjusted$`Pr(>Chisq)` <-
+  format.pval(aov_gender_adjusted$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_gender_adjusted,
+      caption = 'Analysis of Variance Table of type III of the \\textbf{adjusted} model with gender interaction.', table.placement="H", size = 'small')
+```
+
+```{r, fig.height=3, fig.align='center', fig.cap='Interaction plot between the genders of the applicant and the reviewer.\\label{fig:fig_gender}'}
+p_unadjust <- 
+  sjPlot::plot_model(model_genderGENDER, title = 'Unadjusted Model', 
+                     type = 'pred', terms = c('reviewer_gender', 
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+
+p_adjust <- 
+  sjPlot::plot_model(model_genderGENDER_adjusted, title = 'Adjusted Model', 
+                     type = 'pred', terms = c('reviewer_gender',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+cowplot::plot_grid(p_unadjust, p_adjust, labels = c('A', 'B'))
+```
+
+### _Affilitation of the applicant_
+```{r full with int affiliation and gender, cache = TRUE}
+model_genderAFFILIATION <- lme4::lmer(
+    overall_score ~ 
+    applicant_affiliation*applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderAFFILIATION_NULL <- lme4::lmer(
+    overall_score ~ 
+    applicant_affiliation + applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderAFFILIATION_adjusted <- lme4::lmer(
+    overall_score ~ 
+    applicant_gender*applicant_affiliation+
+    reviewer_gender+
+    applicant_age +
+    applicant_nationality +
+    nomination_source +   
+    review_origin +
+    research_topic +
+    call_cut +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+```
+
+```{r, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderAFFILIATION,
+                                          model_genderAFFILIATION_NULL),
+                       caption = 'Summary of a models with and without interaction between the applicant`s affilition and the applicant`s gender.',
+                       label = 'table:model_genderAFFILIATION')
+```
+
+```{r, message = FALSE, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderAFFILIATION_adjusted),
+                       caption = 'Summary of the \\textbf{adjusted} model with interaction between the applicant`s affiliation and applicant`s gender,',
+                       colnames_table = c('Full model with interaction', '',''),
+                       label = 'table:model_genderAFFILIATION_adjusted')
+```
+
+
+```{r, results='asis', message = FALSE}
+aov_affiliation <- car::Anova(model_genderAFFILIATION, type = 3)
+aov_affiliation$`Pr(>Chisq)` <-
+  format.pval(aov_affiliation$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_affiliation,
+      caption = 'Analysis of Variance Table of type III of the model with affiliation interaction',
+      table.placement="H", size = 'small')
+```
+
+```{r, results='asis', message = FALSE}
+aov_affiliation_adjusted <-
+  car::Anova(model_genderAFFILIATION_adjusted, type = 3)
+aov_affiliation_adjusted$`Pr(>Chisq)` <-
+  format.pval(aov_affiliation_adjusted$`Pr(>Chisq)`,
+              digits = 4, eps = 0.001)
+kable(aov_affiliation_adjusted,
+      caption = 'Analysis of Variance Table of type III of the \\textbf{adjusted} model with affiliation interaction.',
+      table.placement="H",
+      size = 'small')
+```
+
+
+```{r, fig.height=3, fig.align='center', fig.cap='Interaction plot between the affiliation and the gender of the applicant.\\label{fig:fig_affil}'}
+p_unadjust <- 
+  sjPlot::plot_model(model_genderAFFILIATION, title = 'Unadjusted Model', 
+                     type = 'pred', terms = c('applicant_affiliation',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_adjust <- 
+  sjPlot::plot_model(model_genderAFFILIATION_adjusted, title = 'Adjusted Model', 
+                     type = 'pred', terms = c('applicant_affiliation',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+cowplot::plot_grid(p_unadjust, p_adjust, labels = c('A', 'B'))
+```
+
+
+
+### _Nationality of the applicant_
+
+```{r full with int nationality and gender, cache = TRUE}
+model_genderNATIONALITY <- lme4::lmer(
+    overall_score ~ 
+    applicant_nationality*applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderNATIONALITY_NULL <- lme4::lmer(
+    overall_score ~ 
+    applicant_nationality + applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case)
+
+model_genderNATIONALITY_adjusted <- lme4::lmer(
+    overall_score ~ 
+    applicant_gender*applicant_nationality+
+    applicant_affiliation+
+    reviewer_gender+
+    applicant_age +
+    nomination_source +   
+    review_origin +
+    research_topic +
+    call_cut +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+```
+
+
+```{r, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderNATIONALITY,
+                                          model_genderNATIONALITY_NULL),
+                       caption = 'Summary of a model with interaction between the applicant`s nationality and the applicant`s gender.',
+                       label = 'table:model_genderNATIONALITY')
+```
+
+
+```{r, message = FALSE, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderNATIONALITY_adjusted),
+                       caption = 'Summary of the \\textbf{adjusted} model with interaction between the applicant`s nationality and applicant`s gender,',
+                       colnames_table = c('Full model with interaction', '',''),
+                       label = 'table:model_genderNATIONALITY_adjusted')
+```
+
+
+```{r, results='asis', message = FALSE}
+aov_nationality <- car::Anova(model_genderNATIONALITY, type = 3)
+aov_nationality$`Pr(>Chisq)` <-
+  format.pval(aov_nationality$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_nationality,
+      caption = 'Analysis of Variance Table of type III of the model with nationality interaction',
+      table.placement="H", size = 'small')
+```
+
+```{r, results='asis', message = FALSE}
+aov_nationality_adjusted <-
+  car::Anova(model_genderNATIONALITY_adjusted, type = 3)
+aov_nationality_adjusted$`Pr(>Chisq)` <-
+  format.pval(aov_nationality_adjusted$`Pr(>Chisq)`,
+              digits = 4, eps = 0.001)
+kable(aov_nationality_adjusted,
+      caption = 'Analysis of Variance Table of type III of the \\textbf{adjusted} model with nationality interaction.', 
+      table.placement="H", size = 'small')
+```
+
+```{r, fig.height=3, fig.align='center', fig.cap='Interaction plot between the nationality and the gender of the applicant.\\label{fig:fig_nation}'}
+p_unadjust <- 
+  sjPlot::plot_model(model_genderNATIONALITY, title = 'Unadjusted Model', 
+                     type = 'pred', terms = c('applicant_nationality',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+
+p_adjust <- 
+  sjPlot::plot_model(model_genderNATIONALITY_adjusted,
+                     title = 'Adjusted Model', 
+                     type = 'pred', terms = c('applicant_nationality',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+
+cowplot::plot_grid(p_unadjust, p_adjust, labels = c('A', 'B'))
+```
+
+### _Source of nomination of the reviewer_
+
+```{r full with int nomination and gender, cache = TRUE}
+model_genderNOMINATION <- lme4::lmer(
+    overall_score ~ 
+    nomination_source*applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderNOMINATION_NULL <- lme4::lmer(
+    overall_score ~ 
+    nomination_source + applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderNOMINATION_adjusted <- lme4::lmer(
+    overall_score ~ 
+    applicant_gender*nomination_source+
+    applicant_nationality+
+    applicant_affiliation+
+    reviewer_gender+
+    applicant_age +
+    review_origin +
+    research_topic +
+    call_cut +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case)  
+```
+
+```{r, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderNOMINATION,
+                                          model_genderNOMINATION_NULL),
+                       caption = 'Summary of the models with and without interaction between the reviewer nomination source of the reviewer and the applicant`s gender.',
+                       label = 'table:model_genderNOMINATION')
+```
+
+
+```{r, message = FALSE, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderNOMINATION_adjusted),
+                       caption = 'Summary of the \\textbf{adjusted} model with interaction between the reviewer nomination source and the applicant`s gender,',
+                       colnames_table = c('Full model with interaction', '',''),
+                       label = 'table:model_genderNOMINATION_adjusted')
+```
+
+```{r, results='asis', message = FALSE}
+aov_nomination <- car::Anova(model_genderNOMINATION, type = 3)
+aov_nomination$`Pr(>Chisq)` <-
+  format.pval(aov_nomination$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_nomination,
+      caption = 'Analysis of Variance Table of type III of the model with nomination interaction',
+      table.placement="H", size = 'small')
+```
+
+```{r, results='asis', message = FALSE}
+aov_nomination_adjusted <-
+  car::Anova(model_genderNOMINATION_adjusted, type = 3)
+aov_nomination_adjusted$`Pr(>Chisq)` <-
+  format.pval(aov_nomination_adjusted$`Pr(>Chisq)`,
+              digits = 4, eps = 0.001)
+kable(aov_nomination_adjusted,
+      caption = 'Analysis of Variance Table of type III of the \\textbf{adjusted} model with nomination interaction.',
+      table.placement="H", size = 'small')
+```
+
+
+```{r, fig.height=3, fig.align='center', fig.cap='Interaction plot between the nomination source of the reviewer and the gender of the applicant.\\label{fig:fig_nomination}'}
+p_unadjust <- 
+  sjPlot::plot_model(model_genderNOMINATION, title = 'Unadjusted Model', 
+                     type = 'pred', terms = c('nomination_source',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+
+p_adjust <- 
+  sjPlot::plot_model(model_genderNOMINATION_adjusted, title = 'Adjusted Model', 
+                     type = 'pred', terms = c('nomination_source',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+
+cowplot::plot_grid(p_unadjust, p_adjust, labels = c('A', 'B'))
+```
+
+
+### _Origin of the reviewer_
+
+
+```{r full with int origin and gender, cache = TRUE}
+model_genderORIGIN <- lme4::lmer(
+    overall_score ~ 
+    review_origin*applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderORIGIN_NULL <- lme4::lmer(
+    overall_score ~ 
+    review_origin + applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderORIGIN_adjusted <- lme4::lmer(
+    overall_score ~ 
+    applicant_gender*review_origin +
+    nomination_source +
+    applicant_nationality+
+    applicant_affiliation+
+    reviewer_gender+
+    applicant_age +
+    research_topic +
+    call_cut +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+```
+
+```{r, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderORIGIN,
+                                          model_genderORIGIN_NULL),
+                       caption = 'Summary of the models with and without interaction between the origin of the reviewer and the applicant`s gender.',
+                       label = 'table:model_genderORIGIN')
+```
+
+```{r, message = FALSE, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderORIGIN_adjusted),
+                       caption = 'Summary of the \\textbf{adjusted} model with interaction between the reviewer`s origin source and the applicant`s gender,',
+                       colnames_table = c('Full model with interaction', '',''))
+```
+
+```{r, message = FALSE}
+aov_origin <- car::Anova(model_genderORIGIN, type = 3)
+aov_origin$`Pr(>Chisq)` <-
+  format.pval(aov_origin$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_origin,
+      caption = 'Analysis of Variance Table of type III of the model with origin interaction',
+      label = 'tab:aovORIGIN', table.placement="H", size = 'small')
+```
+
+```{r, results='asis', message = FALSE}
+aov_origin_adjusted <- car::Anova(model_genderORIGIN_adjusted, type = 3)
+aov_origin_adjusted$`Pr(>Chisq)` <-
+  format.pval(aov_origin_adjusted$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_origin_adjusted,
+      caption = 'Analysis of Variance Table of type III of the \\textbf{adjusted} model with origin interaction.',
+      table.placement="H", size = 'small')
+```
+
+```{r, fig.height=3, fig.align='center', fig.cap='Interaction plot between the origin of the reviewer and the gender of the applicant.\\label{fig:fig_origin}'}
+p_unadjust <- 
+  sjPlot::plot_model(model_genderORIGIN, title = 'Unadjusted Model', 
+                     type = 'pred', terms = c('review_origin',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+
+p_adjust <- 
+  sjPlot::plot_model(model_genderORIGIN_adjusted, title = 'Adjusted Model', 
+                     type = 'pred', terms = c('review_origin',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+
+cowplot::plot_grid(p_unadjust, p_adjust, labels = c('A', 'B'))
+```
+
+### _Research topic_
+
+```{r full with int topic and gender, cache = TRUE}
+model_genderTOPIC <- lme4::lmer(
+    overall_score ~ 
+    research_topic*applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderTOPIC_NULL <- lme4::lmer(
+    overall_score ~ 
+    research_topic + applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderTOPIC_adjusted <- lme4::lmer(
+    overall_score ~ 
+    applicant_gender*research_topic + 
+    review_origin +
+    nomination_source +
+    applicant_nationality+
+    applicant_affiliation+
+    reviewer_gender+
+    applicant_age +
+    call_cut +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+```
+
+```{r, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderTOPIC,
+                                          model_genderTOPIC_NULL),
+                       caption = 'Summary of models with and without interaction between the research topic and the applicant`s gender.',
+                       label = 'table:model_genderTOPIC')
+```
+
+```{r, message = FALSE, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderTOPIC_adjusted),
+                       caption = 'Summary of the \\textbf{adjusted} model with interaction between the research topic and the applicant`s gender,',
+                       colnames_table = c('Full model with interaction', '',''),
+                       label = 'table:model_genderTOPIC_adjusted')
+```
+ 
+```{r, results='asis', message = FALSE}
+aov_topic <- car::Anova(model_genderTOPIC, type = 3)
+aov_topic$`Pr(>Chisq)` <-
+  format.pval(aov_topic$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_topic,
+      caption = 'Analysis of Variance Table of type III of the model with research topic interaction',
+      table.placement="H", size = 'small')
+```
+
+```{r, results='asis', message = FALSE}
+aov_topic_adjusted <- car::Anova(model_genderTOPIC_adjusted, type = 3)
+aov_topic_adjusted$`Pr(>Chisq)` <-
+  format.pval(aov_topic_adjusted$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_topic_adjusted,
+      caption = 'Analysis of Variance Table of type III of the \\textbf{adjusted} model with topic interaction.',
+      table.placement="H", size = 'small')
+```
+
+```{r, fig.height=3, fig.align='center', fig.cap='Interaction plot between the research topic and the gender of the applicant.\\label{fig:fig_topic}'}
+p_unadjust <- 
+  sjPlot::plot_model(model_genderTOPIC, title = 'Unadjusted Model', 
+                     type = 'pred', terms = c('research_topic',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_adjust <- 
+  sjPlot::plot_model(model_genderTOPIC_adjusted, title = 'Adjusted Model', 
+                     type = 'pred', terms = c('research_topic',
+                                              'applicant_gender')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+cowplot::plot_grid(p_unadjust, p_adjust, labels = c('A', 'B'))
+```
+
+
+### _Guidelines_
+
+```{r with int guidelines and gender, cache = TRUE}
+model_genderGUIDELINES <- lme4::lmer(
+    overall_score ~ 
+    call_cut*applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderGUIDELINES_NULL <- lme4::lmer(
+    overall_score ~ 
+    call_cut+applicant_gender +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+
+model_genderGUIDELINES_adjusted <- lme4::lmer(
+    overall_score ~ 
+    call_cut*applicant_gender + 
+    research_topic + 
+    review_origin +
+    nomination_source +
+    applicant_nationality+
+    applicant_affiliation+
+    reviewer_gender+
+    applicant_age +
+    (1 | applicantID) + 
+    (1 | projectID) + 
+    (1 | reviewerID), data = complete_case) 
+```
+
+```{r, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderGUIDELINES, model_genderGUIDELINES_NULL),
+                       caption = 'Summary of models with and without an interaction between the guidelines and the applicant`s gender.',
+                       label = 'table:model_genderGUIDELINES')
+```
+
+```{r, message = FALSE, results='asis'}
+table_extracts_2MODELS(models_list = list(model_genderGUIDELINES_adjusted),
+                       caption = 'Summary of the \\textbf{adjusted} model with interaction between the guidelines and the applicant`s gender.',
+                       colnames_table = c('Full model with interaction', '',''), 
+                       label = 'table:model_genderGUIDELINES_adjusted')
+```
+
+```{r, results='asis', message = FALSE}
+aov_guideline <- car::Anova(model_genderGUIDELINES, type = 3)
+aov_guideline$`Pr(>Chisq)` <- format.pval(aov_guideline$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_guideline, caption = 'Analysis of Variance Table of type III of the model with guideline interaction',
+      table.placement="H", size = 'small')
+```
+
+```{r, results='asis', message = FALSE}
+aov_guideline_adjusted <- car::Anova(model_genderGUIDELINES_adjusted, type = 3)
+aov_guideline_adjusted$`Pr(>Chisq)` <- format.pval(aov_guideline_adjusted$`Pr(>Chisq)`, digits = 4, eps = 0.001)
+kable(aov_guideline_adjusted,
+      caption = 'Analysis of Variance Table of type III of the \\textbf{adjusted} model with guideline interaction.',
+      table.placement="H", size = 'small')
+```
+
+```{r, fig.height=3, fig.align='center', fig.cap='Interaction plot between the guidelines and the gender of the applicant.\\label{fig:fig_guidelines}'}
+p_unadjust <- 
+  sjPlot::plot_model(model_genderGUIDELINES, title = 'Unadjusted Model', 
+                     type = 'pred', terms = c('call_cut', 'applicant_gender'),
+                     axis.title = c('guidelines', 'overall score')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+
+p_adjust <- 
+  sjPlot::plot_model(model_genderGUIDELINES_adjusted, title = 'Adjusted Model', 
+                     type = 'pred', terms = c('call_cut', 'applicant_gender'),
+                     axis.title = c('guidelines', 'overall score')) +
+  ggsci::scale_color_uchicago(name = " ") +
+  theme_minimal()
+
+cowplot::plot_grid(p_unadjust, p_adjust, labels = c('A', 'B'))
+```
+
+
+
+
+```{r latex-numbers, eval = FALSE}
+# latex interface: not implemented
+
+# write numbers.tex with a set of commands to be used in the main text
+# \newcommand{\some_number}{the_number}
+numbers <- list(
+  unique_applications, 
+  unique_reviews, 
+  applications_per_applicant, 
+  applications_per_reviewer)
+
+names(numbers) <-  c(
+  "UniqueApplications", 
+  "UniqueReviews", 
+  "ApplicationsPerApplicant", 
+  "ApplicationsPerReviewer"
+)
+
+map2_chr(
+  names(numbers), numbers, 
+  function(x, y) sprintf("\\newcommand{\\%s}{%s}", x, y)) %>%
+write_lines("../../numbers.tex")
+
+# to update:
+# > git checkout master
+# > git checkout notebook numbers.tex fig/*
+```
+
+```{r ordinal-regression, include=FALSE, eval=FALSE}
+ordinal_data <- reviews %>%
+  dplyr::mutate(overall_score = factor(overall_score, ordered = TRUE))
+# to run the ordinal model, we are required to have 
+# no. random effects < than the no observations
+# => remove the reviewer and the applicant random effect
+# this takes a very very long time to run... (take one observation per applicant?)
+ordinal_model <- ordinal::clmm(
+    overall_score ~ 
+    applicant_gender + 
+    applicant_age +
+    applicant_affiliation +
+    applicant_nationality +
+    nomination_source + 
+    reviewer_gender +
+    review_origin +
+    research_topic +
+    call_cut +
+    (1 | applicant_id) + 
+    (1 | project_id), data = ordinal_data)
+```
+
+```{r exploring-age, eval=FALSE}
+p_load("ggpubr", "ggsci")
+anova_data <- reviews %>%
+  dplyr::group_by(project_id) %>%
+  dplyr::summarise(
+    score = mean(overall_score, rm.na = TRUE),
+    applicant_age = applicant_age[1]) %>%
+  dplyr::filter(applicant_age %in% 4:6) %>%
+  drop_na() %>%
+  dplyr::mutate(applicant_age = ordered(applicant_age, levels = as.character(3:7)))
+
+age_kruskal <- kruskal.test(score ~ applicant_age, data = anova_data)
+pairwise.wilcox.test(anova_data$score, anova_data$applicant_age,
+                     p.adjust.method = "bonf")
+my_comparisons <- list( c("4", "5"), c("5", "6"), c("4", "6"))
+anova_data %>%
+ggviolin(x = "applicant_age", y = "score", fill = "applicant_age",
+          palette = pal_uchicago()(5),
+          add = "boxplot", add.params = list(fill = "white"),
+          ylab = "Overall Score", xlab = "Age of Applicant (/10)") +
+stat_compare_means(comparisons = my_comparisons, label = "p.signif") +
+stat_compare_means(label.y = 8) +
+theme(legend.position = "none")
+
+age_data <- reviews %>%
+  dplyr::filter(!is.na(applicant_age), applicant_age < 7) %>%
+  dplyr::mutate(
+    overall_score = ordered(overall_score, levels = 1:6),
+    applicant_age = ordered(applicant_age, levels = 3:6))
+
+age_model <-
+  ordinal::clmm(
+    overall_score ~
+    applicant_age +
+    call_cut +
+    (1 | applicant_id) +
+    (1 | project_id), data = age_data)
+
+age_data <- reviews %>%
+  dplyr::filter(!is.na(applicant_age), applicant_age < 7) %>%
+  dplyr::mutate(
+    overall_score = ordered(overall_score, levels = 1:6),
+    applicant_age = as.factor(applicant_age))
+
+age_model <-
+  ordinal::clmm(
+    overall_score ~
+    applicant_age +
+    call_cut +
+    (1 | applicant_id) +
+    (1 | reviewer_id) +
+    (1 | project_id), data = age_data,
+    contrasts = list(`applicant_age` = MASS::contr.sdif))
+```
+
+
+```{r extra, include=FALSE, eval=FALSE}
+# if the project ID starts anew within each applicant
+# i.e. if project id nested in applicant id:
+# i.e. starting with ID 1 for each applicant, the model should be as follows:
+# lmer(overall_score ~ applicant_gender + (1 | applicant_id) + (1 | applicant_id : project_id) + (1 | reviewer_id))
+
+# sensitivity analysis
+# aggregate only on the application
+# (eventually on the applicant)
+# crude effect of call_cut
+call_correction <- 
+  lm(overall_score ~ call_cut, data = reviews) %>%
+  coefficients() %>%
+  tail(1)
+
+aggredata <- reviews %>%
+  dplyr::mutate(overall_score = ifelse(call_cut == 'older', overall_score - call_correction, overall_score)) %>%
+  dplyr::group_by(applicant_id) %>%
+  dplyr::summarise(
+    avg_score = mean(overall_score, na.rm = TRUE),
+    # affiliations = as.character(applicant_affiliation),
+    # topics = as.character(research_topic),
+    applicant_gender = applicant_gender[1],
+    n_reviews = n(),
+    reviewer_female = sum(reviewer_gender == "f"),
+    reviewer_ch = sum(review_origin == "national"),
+    referral_positive = sum(nomination_source == "applicant")) %>%
+  ungroup()
+```
+
+```{r, echo = FALSE}
+p_unadjust_gender <-
+  sjPlot::plot_model(model_genderGENDER, title = '',
+                     type = 'pred', 
+                     axis.lim = c(3.875, 5),
+                     terms = c('reviewer_gender', 'applicant_gender'),
+                     axis.title = c('Reviewer Gender', 'Overall Score'),
+                     legend.title = 'Applicant Gender', 
+                     colors = ggsci::pal_uchicago()(2)) +
+  theme_minimal() + 
+  theme(legend.position = "none") +
+  scale_x_discrete(limits = c("Female", "Male"))
+
+p_unadjust_affiliation <-
+  sjPlot::plot_model(model_genderAFFILIATION, title = '',
+                     type = 'pred',
+                     axis.lim = c(3.875, 5),
+                     terms =  c('applicant_affiliation', 'applicant_gender'),
+                     axis.title = c('Applicant Affiliation', ' '),
+                     legend.title = 'Applicant Gender',
+                     color = ggsci::pal_uchicago()(2)) +
+  theme_minimal() +
+  theme(# axis.text.x = element_text(angle = 45, hjust = 1)
+        legend.position = "none",
+        axis.text.y = element_blank()) +
+  scale_x_discrete(limits = c("Uni.", "ETH", "Other"))
+
+p_unadjust_guidelines <-
+  sjPlot::plot_model(model_genderGUIDELINES, title = '',
+                     type = 'pred',
+                     axis.lim = c(3.875, 5),
+                     terms =  c('call_cut', 'applicant_gender'),
+                     axis.title = c('Peer Review Form', ' '),
+                     legend.title = 'Applicant Gender',
+                     color = ggsci::pal_uchicago()(2)) +
+  theme_minimal() + 
+  theme(axis.text.y = element_blank()) + 
+  scale_x_discrete(limits = c("Older", "Newer"))
+
+int_all <- 
+  grid.arrange(p_unadjust_gender, p_unadjust_affiliation, p_unadjust_guidelines, 
+               ncol = 3)
+
+# ggplot2::ggsave("../notebook/plots_paper/int_all.pdf", int_all, w=10)
+```
+
+
+## Acknowledgments {.appendix}
+
+We are grateful to Andreas Limacher (Clinical Trials Unit of the Faculty of Medicine of the University of Bern) for guiding us with the methodology.
+
+## Statistics by Research Topic {.appendix}
+
+Given the differences between average scores per research topic, we examine how these differences unfold according to other variables.  Figure \@ref(fig:gender-correlations) highlights the importance of looking at the effect of one variable in the context of other variables.  In this case, it highlights the importance of adjusting for the topic of research when looking at gender effects.  On the left panel, we see that how the average scores correlates with the percentage of female applicants for each topic.  Female applicants are minority in every topic. Disciplines such as Mathematics and Physics count with as little as 10% female applicants whereas Psychology counts with up to about 40% female applicants.  As expected, topics with higher shares of female applicants tend to have lower average scores.  On the right panel, we try to locate unusual interactions between the gender of applicants and of reviewers in terms of average scores per topic.  In psychology, for instance, male reviewers attributed significantly lower scores to female applicants, whereas in sociology female applicants were penalized by female reviewers.  Most differences were nevertheless not significant.
+
+```{r gender-correlations, fig.height=4.5, fig.cap = "Left panel: scatter plot showing the average review scores versus the percentage of female applicants for each research topic. Blue dotted line and the shaded area show the slope and 95% confidence interval of a linear model on the scatter points.  Right panel: mean review scores per research topic, per gender of the applicant (f: female applicant, m: male applicant), and per gender of the reviewer (f: female reviewers in red, m: male reviewers in blue). Text annotations show the number of observations and bars show the 95% confidence intervals of the mean."}
+
+return_n <- function(x) c(y = mean(x), label = length(x))
+
+share_both <- left_join(
+  reviews %>% 
+    filter(
+      !is.na(applicant_gender), 
+      !is.na(reviewer_gender)) %>%
+    group_by(research_topic, applicant_gender) %>%
+    summarise(n_applicants = n_distinct(applicant_id)) %>%
+    mutate(applicant_share = 100 * n_applicants/sum(n_applicants)) %>%
+    filter(applicant_gender == "f"),
+  reviews %>% 
+    filter(
+      !is.na(applicant_gender), 
+      !is.na(reviewer_gender)) %>%
+    group_by(research_topic, reviewer_gender) %>%
+    summarise(n_reviewers = n_distinct(reviewer_id)) %>%
+    mutate(reviewer_share = 100 * n_reviewers/sum(n_reviewers)) %>%
+    filter(reviewer_gender == "f"), by = "research_topic")
+
+# add average scores by research topic
+share_both <- share_both %>%
+  left_join(reviews %>%
+  group_by(research_topic, project_id) %>%
+  summarise(avg_score_id = mean(overall_score)) %>%
+  summarise(avg_score = mean(avg_score_id)), by = "research_topic")
+
+plot_panel_1 <- ggplot(share_both, aes(x = applicant_share, 
+                       y = avg_score,
+                       label = research_topic)) +
+  labs(x = "\nShare of Female Applicants (%)", 
+       y = "Average Score (%)\n") +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, linetype = "dashed") +
+  geom_label_repel(size = 3) +
+  singlepanel_theme()
+
+plot_panel_2 <- reviews %>% 
+  filter(
+    !is.na(applicant_gender), 
+    !is.na(reviewer_gender)) %>%
+  ggplot(aes(x = applicant_gender, y = overall_score, color = reviewer_gender)) + 
+  stat_summary(fun.data = return_n, geom = "text", fun.y = mean,
+               position = position_dodge(width = 1), size = 2) +
+  stat_summary(fun.data = mean_cl_boot, geom = "pointrange", size = .28, shape = 22) +
+  facet_wrap( ~ research_topic) +
+  labs(x = "\nGender of Applicant", y = "Average Score\n", color = "Gender of Reviewer") +
+  multipanel_theme()
+
+grid.arrange(plot_panel_1, plot_panel_2, 
+             nrow = 1, ncol = 2)
+```
+
+In Figure \@ref(fig:shares), we check whether the percentage of female reviewers correlates that of female applicants, and whether the percentage Swiss-based reviews correlates with that of Swiss applicants.  As we can see on the left panel, female applicants tend to be slightly underrepresented in terms of female reviewers: though differences are small, 9 over 12 research topics have somewhat smaller percentages of female reviewers than of female applicants.  Then, on the right panel, we can see that, with the exception of Economics and Linguistics, topics with higher percentages of Swiss applicants also tend to receive higher percentages of reviews from within Switzerland.
+
+```{r shares, fig.height=4.5, fig.cap = "Left panel: scatter plot showing the share of male reviewers versus the share of female applicants for each research topic. The dotted line shows the identity line.  Right panel : scatter plot showing the percentage of Swiss-based reviews versus the percentage of Swiss applicants for each research topic. The blue dotted line and the shaded areas show the slope and 95% confidence interval of a linear model of the points."}
+
+plot_panel_1 <- ggplot(share_both, 
+                       aes(x = applicant_share,
+                           y = reviewer_share,
+                           label = research_topic)) +
+  labs(x = "\nShare of Female Applicants (%)", 
+       y = "Share of Female Reviewers (%)\n") +
+  geom_point() +
+  geom_abline(slope = 1, linetype = "dashed") + 
+  # geom_smooth(method = "lm", se = TRUE, linetype = "dashed") +
+  geom_label_repel(size = 3) +
+  singlepanel_theme()
+
+share_nationality <- left_join(
+  reviews %>% 
+    filter(!is.na(applicant_nationality)) %>%
+    group_by(research_topic, applicant_nationality) %>%
+    summarise(n = n_distinct(applicant_id)) %>%
+    mutate(share_applicant = 100 * n / sum(n)) %>%
+    filter(applicant_nationality == "ch") %>%
+    select(-n),
+  reviews %>% 
+    filter(!is.na(review_origin)) %>%
+    group_by(research_topic, review_origin) %>%
+    summarise(n = n_distinct(reviewer_id)) %>%
+    mutate(share_review = 100 * n / sum(n)) %>%
+    filter(review_origin == "national") %>%
+    select(-n),
+  by = "research_topic")
+
+plot_panel_2 <- ggplot(share_nationality, 
+       aes(x = share_applicant, y = share_review, label = research_topic)) +
+  labs(x = "\nShare of Swiss Applicants (%)", 
+       y = "Share of Swiss-Based Reviews (%)\n") +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, linetype = "dashed") +
+  geom_label_repel(size = 3) +
+  singlepanel_theme()
+
+
+grid.arrange(plot_panel_1, plot_panel_2, 
+             nrow = 1, ncol = 2)
+```
+
+## Final Remarks {.appendix}
+
+For the regression models, we choose to show the age of the applicants (`applicant_age`) in decades to improve the magnitude and the ease of interpretation of age effects in the regression models. We introduce a dummy variable (`call_cut`) to capture the introduction of new, stricter, SNSF guidelines for reviewers in the call of October 2011.  Due to stricter reviewing guidelines, grant applications submitted after the call of April 2011 receive significantly lower scores than earlier grant applications (see Figure \@ref(fig:means-date)).
