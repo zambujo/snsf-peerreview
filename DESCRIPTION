@@ -1,0 +1,31 @@
+Package: snsf-peerreview
+Title: For compatibility with travis ci
+Version: 0.1
+Authors@R: person("Joao", "Martins", , "joao.martins@snf.ch", role = c("aut", "cre"))
+Depends:
+    R (>= 3.1.0)
+Encoding: UTF-8
+URL: https://github.com/zambujo/snsf-peerreview
+License: CC BY-SA 4.0
+Imports:
+  dplyr,
+  extrafont,
+  forcats,
+  ggrepel,
+  ggpubr,
+  gridExtra,
+  Hmisc,
+  lme4,
+  lubridate,
+  knitr,
+  magrittr,
+  plyr,
+  readr,
+  stringr
+Remotes:
+  rstudio/rmarkdown,
+  rstudio/distill,
+  haozhu233/kableExtra,
+  strengejacke/sjmisc,
+  strengejacke/sjPlot,
+  tidymodels/broom

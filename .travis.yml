@@ -1,0 +1,26 @@
+language: r
+sudo: false
+cache: packages
+r_github_packages:
+  - rstudio/rmarkdown
+  - rstudio/distill
+  - haozhu233/kableExtra
+  - strengejacke/sjmisc
+  - strengejacke/sjPlot
+  - tidymodels/broom
+r_packages:
+  - dplyr
+  - extrafont
+  - forcats
+  - ggrepel
+  - ggpubr
+  - gridExtra
+  - Hmisc
+  - lme4
+  - lubridate
+  - knitr
+  - magrittr
+  - plyr
+  - readr
+  - stringr
+script: make notebook

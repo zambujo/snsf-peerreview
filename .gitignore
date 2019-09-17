@@ -1,0 +1,5 @@
+*.rds.bz2
+*.~lock*
+*.Rhistory
+*.RData
+notebook/peerreview_cache/
