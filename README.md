@@ -1,8 +1,7 @@
+External Peer Review Scores of SNSF Grant Applications
 ---
-title: "External Peer Review Scores of SNSF Grant Applications"
-description: "Data analysis notebook subsequent to [this abstract](https://peerreviewcongress.org/prc17-0280) presented at the [International Congress on Peer Review and Scientific Publication](https://peerreviewcongress.org)."
-tags: peer-review, snsf
----
+
+Data analysis notebook subsequent to [this abstract](https://peerreviewcongress.org/prc17-0280) presented at the [International Congress on Peer Review and Scientific Publication](https://peerreviewcongress.org).
 
 Files
 -----
